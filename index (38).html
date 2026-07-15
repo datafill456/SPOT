@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MVS FX Terminal — USD/LKR Money Market Dealing Screen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <span class="brand-mark">MVS FX TERMINAL</span>
+    <span class="brand-sub">USD/LKR Interbank Money Broking Desk</span>
+  </div>
+  <div class="header-right">
+    <div class="trade-date-box">
+      <div class="label">Trade Date</div>
+      <div class="value mono" id="tradeDateDisplay">—</div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" title="Toggle dark / light">☾ Dark</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab-btn active" data-view="dealer">Dealer Quotes</button>
+  <button class="tab-btn" data-view="dates">Value Dates</button>
+  <button class="tab-btn" data-view="curve">Premium Curve</button>
+  <button class="tab-btn" data-view="broken">Broken Date</button>
+  <button class="tab-btn" data-view="charts">Charts</button>
+  <button class="tab-btn" data-view="history">History</button>
+  <button class="tab-btn" data-view="settings">Settings</button>
+</nav>
+
+<!-- ===================== DEALER QUOTES ===================== -->
+<section class="view active" id="view-dealer">
+
+  <div class="card">
+    <h2>Smart Input <span class="hint">Enter only what you know — Tab / Enter / Arrow keys move between cells</span></h2>
+    <div id="solverStatus" class="solver-status">Enter a Spot rate (or Cash rate + one premium/outright) to begin.</div>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="inputTable">
+        <thead>
+          <tr>
+            <th>Tenor</th>
+            <th>Bid Outright</th>
+            <th>Offer Outright</th>
+            <th>Bid Premium</th>
+            <th>Offer Premium</th>
+          </tr>
+        </thead>
+        <tbody id="inputTableBody"></tbody>
+      </table>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="clearInputsBtn">Clear All Inputs</button>
+      <button class="btn primary" id="saveSnapshotBtn">Save Today's Quotes to History</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Dealer Quote Screen <span class="hint">Live · read-only · large-format board</span></h2>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="quoteScreenTable">
+        <thead>
+          <tr>
+            <th>Tenor</th>
+            <th>Value Date</th>
+            <th>Days</th>
+            <th>Bid Outright</th>
+            <th>Offer Outright</th>
+            <th>Bid Prem.</th>
+            <th>Offer Prem.</th>
+            <th>Bid/Day</th>
+            <th>Offer/Day</th>
+            <th>Bid Ann. %</th>
+            <th>Offer Ann. %</th>
+          </tr>
+        </thead>
+        <tbody id="quoteScreenBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Excel &amp; Reports</h2>
+    <div class="btn-row">
+      <button class="btn" id="exportExcelBtn">Export Excel</button>
+      <button class="btn" id="exportCSVBtn">Export CSV</button>
+      <button class="btn" id="importExcelBtn">Import Excel</button>
+      <input type="file" id="importExcelInput" accept=".xlsx,.xls,.csv" style="display:none;">
+      <button class="btn" id="copyTableBtn">Copy Table</button>
+      <button class="btn primary" id="generatePdfBtn">Generate PDF Report</button>
+    </div>
+    <div style="margin-top:14px;">
+      <label class="field-label">Paste Dealer Quotes (Tenor&#9;Bid&#9;Offer per line — outright or premium)</label>
+      <textarea class="paste-box" id="pasteBox" placeholder="Spot	312.50	312.80
+1M	1.20	1.60
+3M	3.10	3.90"></textarea>
+      <div class="btn-row"><button class="btn" id="applyPasteBtn">Apply Pasted Quotes to Outright</button>
+      <button class="btn" id="applyPastePremiumBtn">Apply Pasted Quotes to Premium</button></div>
+    </div>
+  </div>
+
+</section>
+
+<!-- ===================== VALUE DATES ===================== -->
+<section class="view" id="view-dates">
+  <div class="card">
+    <h2>Automatic Value Date Ladder <span class="hint">Skips Saturdays, Sundays &amp; Sri Lankan bank holidays</span></h2>
+    <div class="ladder" id="ladderBox"></div>
+  </div>
+  <div class="card">
+    <h2>Working Day Detail</h2>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="dateDetailTable">
+        <thead><tr><th>Tenor</th><th>Value Date</th><th>Weekday</th><th>Days from Cash</th><th>Days from Spot</th></tr></thead>
+        <tbody id="dateDetailBody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== PREMIUM CURVE ===================== -->
+<section class="view" id="view-curve">
+  <div class="card">
+    <h2>Complete Premium Curve</h2>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="curveTable">
+        <thead>
+          <tr><th>Tenor</th><th>Bid Prem.</th><th>Offer Prem.</th><th>Spread</th><th>Outright Bid</th><th>Outright Offer</th><th>Bid/Day</th><th>Offer/Day</th></tr>
+        </thead>
+        <tbody id="curveTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== BROKEN DATE ===================== -->
+<section class="view" id="view-broken">
+  <div class="card">
+    <h2>Broken Date / Odd-Date Calculator <span class="hint">Interpolated between the two nearest standard tenors</span></h2>
+    <label class="field-label">Custom Value Date</label>
+    <input type="date" id="brokenDateInput" class="cell-input" style="width:180px;">
+    <div id="brokenResult" style="margin-top:16px;"></div>
+  </div>
+</section>
+
+<!-- ===================== CHARTS ===================== -->
+<section class="view" id="view-charts">
+  <div class="grid-2">
+    <div class="card"><h2>Forward Curve (Outright)</h2><div class="chart-box"><canvas id="chartForward"></canvas></div></div>
+    <div class="card"><h2>Premium Per Day</h2><div class="chart-box"><canvas id="chartPerDay"></canvas></div></div>
+    <div class="card"><h2>Annualized Premium %</h2><div class="chart-box"><canvas id="chartAnnualized"></canvas></div></div>
+    <div class="card">
+      <h2>Premium History <span class="hint">by tenor, across saved days</span></h2>
+      <select id="historyTenorSelect" class="cell-input" style="width:140px;margin-bottom:10px;"></select>
+      <div class="chart-box"><canvas id="chartHistory"></canvas></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== HISTORY ===================== -->
+<section class="view" id="view-history">
+  <div class="card">
+    <h2>Saved Daily Quotes</h2>
+    <div class="history-list" id="historyList"></div>
+    <div class="btn-row"><button class="btn" id="exportHistoryBtn">Export Full History (JSON)</button></div>
+  </div>
+  <div class="card">
+    <h2>Compare Two Trading Days</h2>
+    <div class="grid-2">
+      <div><label class="field-label">Day A</label><select id="compareA" class="cell-input" style="width:100%;"></select></div>
+      <div><label class="field-label">Day B</label><select id="compareB" class="cell-input" style="width:100%;"></select></div>
+    </div>
+    <div class="btn-row"><button class="btn primary" id="runCompareBtn">Compare</button></div>
+    <div id="compareResult" style="margin-top:14px;overflow-x:auto;"></div>
+  </div>
+</section>
+
+<!-- ===================== SETTINGS ===================== -->
+<section class="view" id="view-settings">
+  <div class="card">
+    <h2>Currency Pair</h2>
+    <input type="text" id="pairInput" class="cell-input" style="width:160px;" value="USD/LKR">
+  </div>
+  <div class="card">
+    <h2>Add a Custom Bank Holiday</h2>
+    <input type="date" id="customHolidayInput" class="cell-input" style="width:180px;">
+    <button class="btn" id="addHolidayBtn">Add Holiday</button>
+    <div class="small-text" style="margin-top:10px;">Custom holidays are stored locally and merged with the built-in 2026 CBSL calendar.</div>
+  </div>
+  <div class="card">
+    <h2>Current Holiday List</h2>
+    <div id="holidayListBox" class="small-text mono" style="max-height:220px;overflow-y:auto;"></div>
+  </div>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="calendar.js"></script>
+<script src="calculator.js"></script>
+<script src="storage.js"></script>
+<script src="excel.js"></script>
+<script src="chart.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
