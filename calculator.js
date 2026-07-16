@@ -4,33 +4,39 @@
    every rate, premium and derived figure it can from whatever
    subset of fields the dealer has typed in.
 
-   MODEL
-   -----
-   For a given side (bid or offer) we treat the outright rate as a
-   function of calendar days-from-spot:      outright(d) = spot + m*d
-   where m = "points per day" (can be negative = discount).
+   MODEL — points between ANY two value dates, chained
+   ----------------------------------------------------
+   Real desks don't quote premium against a fixed date; they quote
+   SWAP POINTS FOR AN INTERVAL: Cash-Tom, Tom-Spot, Cash-Spot,
+   Spot-1M, 1M-2M, Cash-3M, and so on. Points are additive along the
+   date axis (Cash-Spot + Spot-1M = Cash-1M exactly), so the whole
+   set of quoted intervals forms a graph: nodes = value dates
+   (cash, tom, spot, 1W...12M), edges = a quoted interval with a
+   points value going from the earlier date to the later one.
 
-   Spot itself is the intercept at d = 0. Cash/Tom sit at negative d
-   (they settle before spot), the forward tenors sit at positive d.
+   Each side is solved independently and is called PAYER / RECEIVER
+   rather than bid/offer — the side that pays the premium (buys the
+   forward) vs. the side that receives it (sells the forward).
 
-   Bootstrapping spot & m ("intelligent solver"):
-     1. Any row where the dealer typed BOTH outright and premium
-        gives an exact point -> spot = outright - premium.
-     2. Otherwise every row with a known outright is an anchor
-        {days, outright}. 0 anchors -> unsolvable. 1 anchor at
-        d=0 -> spot known, curve unknown. >=2 anchors -> least
-        squares fit of spot (intercept) and m (slope) through them
-        (exact if there are exactly two).
-     3. If spot is known but m isn't, any row with a directly typed
-        premium (no outright) contributes m = premium/days; those
-        are averaged.
-     4. Every remaining row is filled from spot + m*days. Rows the
-        dealer typed directly are never overwritten.
+   Solving:
+     1. Build a graph from every interval the dealer has typed
+        points for (either side).
+     2. Walk each connected component with a breadth-first search
+        to get every node's value RELATIVE to an arbitrary root of
+        its component — this alone gives "premium from Spot" (or
+        from Cash, or between any two tenors in the same component)
+        even with zero absolute rates typed in anywhere.
+     3. If the dealer has also typed an actual outright rate for
+        ANY one node (an "anchor"), that whole connected component
+        gets shifted from relative to absolute: outright(node) =
+        anchor + (relative value of node - relative value of anchor).
+     4. Nodes with no path back to an anchor stay blank for
+        outright, but can still show a premium/points figure if
+        they're connected to Spot in the relative graph.
 
    Broken dates (arbitrary custom value date) are interpolated
-   piecewise-linearly between the two nearest SOLVED standard tenors,
-   which is standard market practice and independent of the spot
-   bootstrap above.
+   piecewise-linearly between the two nearest SOLVED standard
+   tenors' premium-from-spot, which is standard market practice.
    ============================================================ */
 
 const FXCalculator = (function () {
@@ -65,147 +71,147 @@ const FXCalculator = (function () {
     return { cash, tom, spot, dates, days };
   }
 
-  /** Least-squares fit of outright = spot + m*days through 2+ points. */
-  function fitLine(points) {
-    const n = points.length;
-    if (n === 0) return null;
-    if (n === 1) return points[0].days === 0 ? { spot: points[0].outright, m: null } : null;
-
-    const sumD = points.reduce((s, p) => s + p.days, 0);
-    const sumR = points.reduce((s, p) => s + p.outright, 0);
-    const sumDD = points.reduce((s, p) => s + p.days * p.days, 0);
-    const sumDR = points.reduce((s, p) => s + p.days * p.outright, 0);
-    const denom = n * sumDD - sumD * sumD;
-    if (Math.abs(denom) < 1e-9) {
-      // all same day (shouldn't happen) - fall back to average
-      return { spot: sumR / n, m: null };
-    }
-    const m = (n * sumDR - sumD * sumR) / denom;
-    const spot = (sumR - m * sumD) / n;
-    return { spot, m };
-  }
+  /**
+   * Curated default set of intervals a Colombo money-broking desk
+   * actually quotes: near-date pairs (Cash-Tom, Tom-Spot, Cash-Spot),
+   * the standard Spot-based ladder, forward-to-forward rolls, and a
+   * couple of common Cash-based skips. Dealers can add any other
+   * pair with the "custom interval" row in the UI.
+   */
+  const DEFAULT_INTERVALS = [
+    ['cash', 'tom'], ['tom', 'spot'], ['cash', 'spot'],
+    ['spot', '1W'], ['spot', '2W'], ['spot', '1M'], ['spot', '2M'],
+    ['spot', '3M'], ['spot', '6M'], ['spot', '12M'],
+    ['1M', '2M'], ['2M', '3M'], ['3M', '6M'], ['6M', '12M'],
+    ['cash', '1M'], ['cash', '3M'],
+  ];
 
   /**
-   * Solve one side (bid or offer) of the curve.
-   * input[t] = { outright: number|null, premium: number|null } for each tenor t.
-   * days[t] = calendar days from spot for each tenor.
-   * Returns { spot, m, rows: { [t]: {outright, premium, source} } }
+   * Solve one side (payer or receiver) of the interval graph.
+   * edgeList:   [{ from, to, value }]   value = points from -> to
+   * anchorList: [{ node, value }]        value = actual outright rate
+   * Returns: { relFromSpot: {node: number|null}, absolute: {node: number|null} }
    */
-  function solveSide(input, days) {
-    // Step 1: exact spot points from rows with both fields typed.
-    const exactSpots = [];
-    TENOR_ORDER.forEach((t) => {
-      const row = input[t] || {};
-      if (isNum(row.outright) && isNum(row.premium)) {
-        exactSpots.push(row.outright - row.premium);
+  function solveSideGraph(edgeList, anchorList) {
+    const adj = {};
+    TENOR_ORDER.forEach((n) => { adj[n] = []; });
+    edgeList.forEach(({ from, to, value }) => {
+      if (!isNum(value) || !adj[from] || !adj[to]) return;
+      adj[from].push({ to, w: value });
+      adj[to].push({ to: from, w: -value });
+    });
+
+    // BFS every node into connected components, tracking value relative
+    // to an arbitrary root (the first node visited in that component).
+    const visited = {};
+    const relFromRoot = {};
+    const componentOf = {};
+    let compId = 0;
+
+    TENOR_ORDER.forEach((start) => {
+      if (visited[start]) return;
+      compId += 1;
+      visited[start] = true;
+      relFromRoot[start] = 0;
+      componentOf[start] = compId;
+      const queue = [start];
+      while (queue.length) {
+        const node = queue.shift();
+        adj[node].forEach(({ to, w }) => {
+          if (!visited[to]) {
+            visited[to] = true;
+            relFromRoot[to] = relFromRoot[node] + w;
+            componentOf[to] = compId;
+            queue.push(to);
+          }
+        });
       }
     });
 
-    let spot = null;
-    let m = null;
-
-    if (exactSpots.length) {
-      spot = avg(exactSpots);
-    } else {
-      const anchors = [];
-      TENOR_ORDER.forEach((t) => {
-        const row = input[t] || {};
-        if (isNum(row.outright)) anchors.push({ days: days[t], outright: row.outright });
-      });
-      const fit = fitLine(anchors);
-      if (fit) { spot = fit.spot; m = fit.m; }
-    }
-
-    if (spot !== null && m === null) {
-      // Try to derive slope from directly-typed premiums.
-      const slopes = [];
-      TENOR_ORDER.forEach((t) => {
-        const row = input[t] || {};
-        if (isNum(row.premium) && !isNum(row.outright) && days[t] !== 0) {
-          slopes.push(row.premium / days[t]);
-        }
-      });
-      if (slopes.length) m = avg(slopes);
-    }
-
-    const rows = {};
-    TENOR_ORDER.forEach((t) => {
-      const row = input[t] || {};
-      let outright = isNum(row.outright) ? row.outright : null;
-      let premium = isNum(row.premium) ? row.premium : null;
-      let source = 'blank';
-
-      if (outright !== null && premium !== null) {
-        source = 'typed';
-      } else if (outright !== null && spot !== null) {
-        premium = outright - spot;
-        source = 'derived-from-outright';
-      } else if (premium !== null && spot !== null) {
-        outright = spot + premium;
-        source = 'derived-from-premium';
-      } else if (spot !== null && m !== null) {
-        premium = m * days[t];
-        outright = spot + premium;
-        source = 'curve-fit';
-      } else if (t === 'spot' && spot !== null) {
-        outright = spot;
-        premium = 0;
-        source = 'spot-anchor';
-      }
-
-      rows[t] = { outright, premium, source };
+    // Relative-to-Spot: only meaningful for nodes in Spot's component.
+    const spotComp = componentOf.spot;
+    const relFromSpot = {};
+    TENOR_ORDER.forEach((n) => {
+      relFromSpot[n] = componentOf[n] === spotComp ? relFromRoot[n] - relFromRoot.spot : null;
     });
 
-    return { spot, m, rows };
+    // Absolute rates: shift each component that contains an anchor.
+    const absolute = {};
+    TENOR_ORDER.forEach((n) => { absolute[n] = null; });
+    const anchorByComponent = {};
+    anchorList.forEach(({ node, value }) => {
+      if (!isNum(value) || !(node in componentOf)) return;
+      const comp = componentOf[node];
+      if (!(comp in anchorByComponent)) anchorByComponent[comp] = { node, value };
+    });
+    Object.keys(anchorByComponent).forEach((comp) => {
+      const anchor = anchorByComponent[comp];
+      const base = anchor.value - relFromRoot[anchor.node];
+      TENOR_ORDER.forEach((n) => {
+        if (componentOf[n] === Number(comp)) absolute[n] = base + relFromRoot[n];
+      });
+    });
+
+    return { relFromSpot, absolute };
   }
 
   /**
-   * Full market solve. rawInput shape:
-   * { cash: {bid:{outright,premium}, offer:{...}}, tom: {...}, spot: {...}, '1W': {...}, ... }
+   * Full market solve.
+   * edges:   [{ from, to, payer: number|null, receiver: number|null }]
+   * anchors: [{ node, payer: number|null, receiver: number|null }]
    */
-  function solveMarket(rawInput, valueDates) {
+  function solveMarket(edges, anchors, valueDates) {
     const days = valueDates.days;
-    const bidInput = {}, offerInput = {};
-    TENOR_ORDER.forEach((t) => {
-      bidInput[t] = (rawInput[t] && rawInput[t].bid) || {};
-      offerInput[t] = (rawInput[t] && rawInput[t].offer) || {};
-    });
 
-    const bidSolve = solveSide(bidInput, days);
-    const offerSolve = solveSide(offerInput, days);
+    const payerEdges = edges.map((e) => ({ from: e.from, to: e.to, value: e.payer }));
+    const receiverEdges = edges.map((e) => ({ from: e.from, to: e.to, value: e.receiver }));
+    const payerAnchors = anchors.map((a) => ({ node: a.node, value: a.payer }));
+    const receiverAnchors = anchors.map((a) => ({ node: a.node, value: a.receiver }));
+
+    const payerSolve = solveSideGraph(payerEdges, payerAnchors);
+    const receiverSolve = solveSideGraph(receiverEdges, receiverAnchors);
 
     const curve = {};
     TENOR_ORDER.forEach((t) => {
-      const b = bidSolve.rows[t];
-      const o = offerSolve.rows[t];
       const d = days[t];
+      const payerPremium = payerSolve.relFromSpot[t];
+      const receiverPremium = receiverSolve.relFromSpot[t];
+      const payerOutright = payerSolve.absolute[t];
+      const receiverOutright = receiverSolve.absolute[t];
 
       curve[t] = {
         label: TENOR_LABELS[t],
         date: valueDates.dates[t],
-        days,
         daysFromSpot: d,
-        bidOutright: b.outright,
-        offerOutright: o.outright,
-        bidPremium: b.premium,
-        offerPremium: o.premium,
-        spreadOutright: numOrNull(o.outright, b.outright, (a, c) => a - c),
-        spreadPremium: numOrNull(o.premium, b.premium, (a, c) => a - c),
-        bidPremiumPerDay: d !== 0 && isNum(b.premium) ? b.premium / d : (d === 0 ? 0 : null),
-        offerPremiumPerDay: d !== 0 && isNum(o.premium) ? o.premium / d : (d === 0 ? 0 : null),
-        bidAnnualized: annualize(b.premium, bidSolve.spot, d),
-        offerAnnualized: annualize(o.premium, offerSolve.spot, d),
-        source: b.source,
+        payerOutright,
+        receiverOutright,
+        payerPremium,
+        receiverPremium,
+        spreadOutright: numOrNull(payerOutright, receiverOutright, (a, c) => a - c),
+        spreadPremium: numOrNull(payerPremium, receiverPremium, (a, c) => a - c),
+        payerPremiumPerDay: d !== 0 && isNum(payerPremium) ? payerPremium / d : (d === 0 ? 0 : null),
+        receiverPremiumPerDay: d !== 0 && isNum(receiverPremium) ? receiverPremium / d : (d === 0 ? 0 : null),
+        payerAnnualized: annualize(payerPremium, payerSolve.absolute.spot, d),
+        receiverAnnualized: annualize(receiverPremium, receiverSolve.absolute.spot, d),
       };
     });
 
     return {
-      bidSpot: bidSolve.spot,
-      offerSpot: offerSolve.spot,
-      bidSlope: bidSolve.m,
-      offerSlope: offerSolve.m,
+      payerSpot: payerSolve.absolute.spot,
+      receiverSpot: receiverSolve.absolute.spot,
       curve,
     };
+  }
+
+  /** Points between any two nodes, using whichever side's relative graph is connected. */
+  function intervalPremium(edges, anchors, fromNode, toNode) {
+    const payerEdges = edges.map((e) => ({ from: e.from, to: e.to, value: e.payer }));
+    const receiverEdges = edges.map((e) => ({ from: e.from, to: e.to, value: e.receiver }));
+    const payerSolve = solveSideGraph(payerEdges, []);
+    const receiverSolve = solveSideGraph(receiverEdges, []);
+    const p = numOrNull(payerSolve.relFromSpot[toNode], payerSolve.relFromSpot[fromNode], (a, c) => a - c);
+    const r = numOrNull(receiverSolve.relFromSpot[toNode], receiverSolve.relFromSpot[fromNode], (a, c) => a - c);
+    return { payer: p, receiver: r };
   }
 
   function annualize(premium, spot, days) {
@@ -220,8 +226,8 @@ const FXCalculator = (function () {
 
     const points = TENOR_ORDER
       .map((t) => solvedCurve[t])
-      .filter((row) => isNum(row.bidPremium) && isNum(row.offerPremium))
-      .map((row) => ({ days: row.daysFromSpot, bid: row.bidPremium, offer: row.offerPremium }))
+      .filter((row) => isNum(row.payerPremium) && isNum(row.receiverPremium))
+      .map((row) => ({ days: row.daysFromSpot, payer: row.payerPremium, receiver: row.receiverPremium }))
       .sort((a, b) => a.days - b.days);
 
     if (points.length < 2) return null;
@@ -233,27 +239,27 @@ const FXCalculator = (function () {
       }
     }
     if (!lower) {
-      // extrapolate using the two nearest points
       if (targetDays < points[0].days) { lower = points[0]; upper = points[1]; }
       else { lower = points[points.length - 2]; upper = points[points.length - 1]; }
     }
 
     const span = upper.days - lower.days || 1;
     const frac = (targetDays - lower.days) / span;
-    const bidPremium = lower.bid + frac * (upper.bid - lower.bid);
-    const offerPremium = lower.offer + frac * (upper.offer - lower.offer);
-    return { days: targetDays, bidPremium, offerPremium };
+    const payerPremium = lower.payer + frac * (upper.payer - lower.payer);
+    const receiverPremium = lower.receiver + frac * (upper.receiver - lower.receiver);
+    return { days: targetDays, payerPremium, receiverPremium };
   }
 
   function isNum(v) { return typeof v === 'number' && !Number.isNaN(v); }
-  function avg(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
   function numOrNull(a, b, fn) { return isNum(a) && isNum(b) ? fn(a, b) : null; }
 
   return {
     TENOR_ORDER,
     TENOR_LABELS,
+    DEFAULT_INTERVALS,
     buildValueDates,
     solveMarket,
+    intervalPremium,
     interpolateBrokenDate,
   };
 })();
