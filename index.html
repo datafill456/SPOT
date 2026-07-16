@@ -38,23 +38,42 @@
 <section class="view active" id="view-dealer">
 
   <div class="card">
-    <h2>Smart Input <span class="hint">Enter only what you know — Tab / Enter / Arrow keys move between cells</span></h2>
-    <div id="solverStatus" class="solver-status">Enter a Spot rate (or Cash rate + one premium/outright) to begin.</div>
+    <h2>Swap Points by Interval <span class="hint">Cash-Tom, Tom-Spot, Spot-tenor, forward-to-forward — enter only the intervals you have</span></h2>
+    <div id="solverStatus" class="solver-status">Add points for at least one interval, plus one real outright below to anchor it.</div>
     <div style="overflow-x:auto;">
-      <table class="dealer" id="inputTable">
+      <table class="dealer" id="intervalTable">
         <thead>
           <tr>
-            <th>Tenor</th>
-            <th>Bid Outright</th>
-            <th>Offer Outright</th>
-            <th>Bid Premium</th>
-            <th>Offer Premium</th>
+            <th>Interval</th>
+            <th>Payer Points</th>
+            <th>Receiver Points</th>
+            <th></th>
           </tr>
         </thead>
-        <tbody id="inputTableBody"></tbody>
+        <tbody id="intervalTableBody"></tbody>
       </table>
     </div>
-    <div class="btn-row">
+    <div class="btn-row" style="margin-top:10px;">
+      <select id="customFrom" class="cell-input" style="width:110px;"></select>
+      <span class="small-text">to</span>
+      <select id="customTo" class="cell-input" style="width:110px;"></select>
+      <button class="btn" id="addCustomIntervalBtn">Add Custom Interval</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Absolute Anchor <span class="hint">The one (or more) real traded outright rate that pins the whole chain</span></h2>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="anchorTable">
+        <thead><tr><th>Value Date</th><th>Payer Rate</th><th>Receiver Rate</th><th></th></tr></thead>
+        <tbody id="anchorTableBody"></tbody>
+      </table>
+    </div>
+    <div class="btn-row" style="margin-top:10px;">
+      <select id="newAnchorNode" class="cell-input" style="width:110px;"></select>
+      <button class="btn" id="addAnchorBtn">Add Anchor</button>
+    </div>
+    <div class="btn-row" style="margin-top:14px;">
       <button class="btn" id="clearInputsBtn">Clear All Inputs</button>
       <button class="btn primary" id="saveSnapshotBtn">Save Today's Quotes to History</button>
     </div>
@@ -69,14 +88,14 @@
             <th>Tenor</th>
             <th>Value Date</th>
             <th>Days</th>
-            <th>Bid Outright</th>
-            <th>Offer Outright</th>
-            <th>Bid Prem.</th>
-            <th>Offer Prem.</th>
-            <th>Bid/Day</th>
-            <th>Offer/Day</th>
-            <th>Bid Ann. %</th>
-            <th>Offer Ann. %</th>
+            <th>Payer Outright</th>
+            <th>Receiver Outright</th>
+            <th>Payer Prem.</th>
+            <th>Receiver Prem.</th>
+            <th>Payer/Day</th>
+            <th>Receiver/Day</th>
+            <th>Payer Ann. %</th>
+            <th>Receiver Ann. %</th>
           </tr>
         </thead>
         <tbody id="quoteScreenBody"></tbody>
@@ -95,12 +114,10 @@
       <button class="btn primary" id="generatePdfBtn">Generate PDF Report</button>
     </div>
     <div style="margin-top:14px;">
-      <label class="field-label">Paste Dealer Quotes (Tenor&#9;Bid&#9;Offer per line — outright or premium)</label>
-      <textarea class="paste-box" id="pasteBox" placeholder="Spot	312.50	312.80
-1M	1.20	1.60
-3M	3.10	3.90"></textarea>
-      <div class="btn-row"><button class="btn" id="applyPasteBtn">Apply Pasted Quotes to Outright</button>
-      <button class="btn" id="applyPastePremiumBtn">Apply Pasted Quotes to Premium</button></div>
+      <label class="field-label">Paste Anchor Quotes (Tenor&#9;Payer&#9;Receiver per line — sets the Absolute Anchor rows)</label>
+      <textarea class="paste-box" id="pasteBox" placeholder="Spot	312.80	312.50
+1M	314.00	313.50"></textarea>
+      <div class="btn-row"><button class="btn" id="applyPasteBtn">Apply Pasted Quotes as Anchors</button></div>
     </div>
   </div>
 
@@ -130,7 +147,7 @@
     <div style="overflow-x:auto;">
       <table class="dealer" id="curveTable">
         <thead>
-          <tr><th>Tenor</th><th>Bid Prem.</th><th>Offer Prem.</th><th>Spread</th><th>Outright Bid</th><th>Outright Offer</th><th>Bid/Day</th><th>Offer/Day</th></tr>
+          <tr><th>Tenor</th><th>Payer Prem.</th><th>Receiver Prem.</th><th>Spread</th><th>Outright Payer</th><th>Outright Receiver</th><th>Payer/Day</th><th>Receiver/Day</th></tr>
         </thead>
         <tbody id="curveTableBody"></tbody>
       </table>
