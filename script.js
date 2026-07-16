@@ -4,6 +4,11 @@
    chart.js together into the running application: renders every
    view, listens for input, and re-solves the market on every
    keystroke (no Calculate button, per spec).
+
+   INPUT MODEL: the dealer enters swap POINTS for whichever
+   intervals they have (Cash-Tom, Spot-1M, 1M-2M, ...), labeled
+   Payer/Receiver, plus one or more real outright ANCHOR rates that
+   pin the whole chain to actual levels.
    ============================================================ */
 
 (function () {
@@ -13,14 +18,24 @@
   const state = {
     tradeDate: new Date(),
     pair: 'USD/LKR',
-    rawInput: {}, // tenor -> {bid:{outright,premium}, offer:{outright,premium}}
+    edges: [],   // [{ id, from, to, payer:number|null, receiver:number|null }]
+    anchors: [], // [{ id, node, payer:number|null, receiver:number|null }]
     valueDates: null,
     solved: null,
   };
 
-  TENORS.forEach((t) => {
-    state.rawInput[t] = { bid: { outright: null, premium: null }, offer: { outright: null, premium: null } };
-  });
+  let nextEdgeId = 1;
+  let nextAnchorId = 1;
+
+  function makeDefaultEdges() {
+    return FXCalculator.DEFAULT_INTERVALS.map(([from, to]) => ({
+      id: nextEdgeId++, from, to, payer: null, receiver: null,
+    }));
+  }
+
+  function makeDefaultAnchors() {
+    return [{ id: nextAnchorId++, node: 'spot', payer: null, receiver: null }];
+  }
 
   function todayKey() {
     return FXCalendar.fmt(state.tradeDate);
@@ -28,15 +43,21 @@
 
   function recompute() {
     state.valueDates = FXCalculator.buildValueDates(state.tradeDate);
-    state.solved = FXCalculator.solveMarket(state.rawInput, state.valueDates);
+    state.solved = FXCalculator.solveMarket(state.edges, state.anchors, state.valueDates);
   }
 
   /* ---------------- Draft persistence ---------------- */
   function loadDraft() {
     const draft = FXStorage.loadDraft();
-    if (draft && draft.tradeDateKey === todayKey()) {
-      state.rawInput = draft.rawInput;
+    if (draft && draft.tradeDateKey === todayKey() && draft.edges && draft.anchors) {
+      state.edges = draft.edges;
+      state.anchors = draft.anchors;
       state.pair = draft.pair || state.pair;
+      nextEdgeId = Math.max(1, ...state.edges.map((e) => e.id + 1));
+      nextAnchorId = Math.max(1, ...state.anchors.map((a) => a.id + 1));
+    } else {
+      state.edges = makeDefaultEdges();
+      state.anchors = makeDefaultAnchors();
     }
   }
 
@@ -44,7 +65,9 @@
   function scheduleSaveDraft() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      FXStorage.saveDraft({ tradeDateKey: todayKey(), rawInput: state.rawInput, pair: state.pair });
+      FXStorage.saveDraft({
+        tradeDateKey: todayKey(), edges: state.edges, anchors: state.anchors, pair: state.pair,
+      });
     }, 300);
   }
 
@@ -73,53 +96,119 @@
   }
 
   /* ==================================================================
-     RENDER: input table (Dealer Quotes tab)
+     RENDER: Interval (swap points) table
      ================================================================== */
-  function renderInputTable() {
-    const tbody = document.getElementById('inputTableBody');
+  function intervalLabel(e) {
+    return `${LABELS[e.from]} → ${LABELS[e.to]}`;
+  }
+
+  function renderIntervalTable() {
+    const tbody = document.getElementById('intervalTableBody');
     tbody.innerHTML = '';
-    TENORS.forEach((t) => {
+    state.edges.forEach((e) => {
       const tr = document.createElement('tr');
-      if (t === 'spot') tr.classList.add('row-spot');
-      const date = state.valueDates.dates[t];
       tr.innerHTML = `
-        <td><span class="tenor-name">${LABELS[t]}</span><span class="tenor-date">${fmtDateLabel(date)}</span></td>
-        <td><input type="number" step="any" class="cell-input bid-input" data-tenor="${t}" data-side="bid" data-field="outright" placeholder="—"></td>
-        <td><input type="number" step="any" class="cell-input offer-input" data-tenor="${t}" data-side="offer" data-field="outright" placeholder="—"></td>
-        <td><input type="number" step="any" class="cell-input bid-input" data-tenor="${t}" data-side="bid" data-field="premium" placeholder="—"></td>
-        <td><input type="number" step="any" class="cell-input offer-input" data-tenor="${t}" data-side="offer" data-field="premium" placeholder="—"></td>
+        <td><span class="tenor-name">${intervalLabel(e)}</span></td>
+        <td><input type="number" step="any" class="cell-input bid-input edge-input" data-id="${e.id}" data-side="payer" placeholder="—"></td>
+        <td><input type="number" step="any" class="cell-input offer-input edge-input" data-id="${e.id}" data-side="receiver" placeholder="—"></td>
+        <td><button class="btn danger" data-remove-edge="${e.id}" style="padding:3px 8px;">✕</button></td>
       `;
       tbody.appendChild(tr);
     });
 
-    // populate values
-    document.querySelectorAll('#inputTableBody input.cell-input').forEach((input) => {
-      const { tenor, side, field } = input.dataset;
-      const v = state.rawInput[tenor][side][field];
+    tbody.querySelectorAll('input.edge-input').forEach((input) => {
+      const id = Number(input.dataset.id);
+      const edge = state.edges.find((e) => e.id === id);
+      const v = edge[input.dataset.side];
       input.value = v === null || v === undefined ? '' : v;
     });
 
-    attachInputHandlers();
-  }
-
-  function attachInputHandlers() {
-    const inputs = Array.from(document.querySelectorAll('#inputTableBody input.cell-input'));
-
-    inputs.forEach((input, idx) => {
-      input.addEventListener('input', () => {
-        const { tenor, side, field } = input.dataset;
-        const raw = input.value.trim();
-        state.rawInput[tenor][side][field] = raw === '' ? null : parseFloat(raw);
+    tbody.querySelectorAll('[data-remove-edge]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.edges = state.edges.filter((e) => e.id !== Number(btn.dataset.removeEdge));
         recompute();
-        renderQuoteScreen();
-        renderSolverStatus();
-        renderCurveTable();
+        renderIntervalTable();
+        renderDownstream();
         scheduleSaveDraft();
       });
+    });
 
+    attachGridKeyboardNav('#intervalTableBody', 'input.edge-input');
+
+    tbody.querySelectorAll('input.edge-input').forEach((input) => {
+      input.addEventListener('input', () => {
+        const id = Number(input.dataset.id);
+        const edge = state.edges.find((e) => e.id === id);
+        const raw = input.value.trim();
+        edge[input.dataset.side] = raw === '' ? null : parseFloat(raw);
+        recompute();
+        renderDownstream();
+        scheduleSaveDraft();
+      });
+    });
+  }
+
+  /* ==================================================================
+     RENDER: Anchor table
+     ================================================================== */
+  function renderAnchorTable() {
+    const tbody = document.getElementById('anchorTableBody');
+    tbody.innerHTML = '';
+    state.anchors.forEach((a) => {
+      const date = state.valueDates.dates[a.node];
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><span class="tenor-name">${LABELS[a.node]}</span><span class="tenor-date">${fmtDateLabel(date)}</span></td>
+        <td><input type="number" step="any" class="cell-input bid-input anchor-input" data-id="${a.id}" data-side="payer" placeholder="—"></td>
+        <td><input type="number" step="any" class="cell-input offer-input anchor-input" data-id="${a.id}" data-side="receiver" placeholder="—"></td>
+        <td><button class="btn danger" data-remove-anchor="${a.id}" style="padding:3px 8px;">✕</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    tbody.querySelectorAll('input.anchor-input').forEach((input) => {
+      const id = Number(input.dataset.id);
+      const anchor = state.anchors.find((a) => a.id === id);
+      const v = anchor[input.dataset.side];
+      input.value = v === null || v === undefined ? '' : v;
+    });
+
+    tbody.querySelectorAll('[data-remove-anchor]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.anchors = state.anchors.filter((a) => a.id !== Number(btn.dataset.removeAnchor));
+        recompute();
+        renderAnchorTable();
+        renderDownstream();
+        scheduleSaveDraft();
+      });
+    });
+
+    attachGridKeyboardNav('#anchorTableBody', 'input.anchor-input');
+
+    tbody.querySelectorAll('input.anchor-input').forEach((input) => {
+      input.addEventListener('input', () => {
+        const id = Number(input.dataset.id);
+        const anchor = state.anchors.find((a) => a.id === id);
+        const raw = input.value.trim();
+        anchor[input.dataset.side] = raw === '' ? null : parseFloat(raw);
+        recompute();
+        renderDownstream();
+        scheduleSaveDraft();
+      });
+    });
+  }
+
+  function populateTenorSelect(sel) {
+    sel.innerHTML = TENORS.map((t) => `<option value="${t}">${LABELS[t]}</option>`).join('');
+  }
+
+  /* Generic Tab/Enter/Arrow navigation shared by the interval & anchor grids. */
+  function attachGridKeyboardNav(bodySelector, inputSelector) {
+    const inputs = Array.from(document.querySelectorAll(`${bodySelector} ${inputSelector}`));
+    inputs.forEach((input, idx) => {
       input.addEventListener('keydown', (e) => {
-        const cols = ['outright', 'outright', 'premium', 'premium']; // not used directly; navigation below is column-index based
-        const colIndex = Array.from(input.parentElement.parentElement.children).indexOf(input.parentElement); // row's cell index of this input's <td>
+        const td = input.closest('td');
+        const colIndex = Array.from(td.parentElement.children).indexOf(td);
         const rowEl = input.closest('tr');
         const rowIndex = Array.from(rowEl.parentElement.children).indexOf(rowEl);
         const allRows = Array.from(rowEl.parentElement.children);
@@ -131,17 +220,13 @@
         } else if (e.key === 'ArrowDown') {
           e.preventDefault();
           const targetRow = allRows[rowIndex + 1];
-          if (targetRow) {
-            const targetInput = targetRow.children[colIndex].querySelector('input');
-            if (targetInput) targetInput.focus();
-          }
+          const targetInput = targetRow && targetRow.children[colIndex] && targetRow.children[colIndex].querySelector('input');
+          if (targetInput) targetInput.focus();
         } else if (e.key === 'ArrowUp') {
           e.preventDefault();
           const targetRow = allRows[rowIndex - 1];
-          if (targetRow) {
-            const targetInput = targetRow.children[colIndex].querySelector('input');
-            if (targetInput) targetInput.focus();
-          }
+          const targetInput = targetRow && targetRow.children[colIndex] && targetRow.children[colIndex].querySelector('input');
+          if (targetInput) targetInput.focus();
         } else if (e.key === 'ArrowRight' && input.selectionStart === input.value.length) {
           const next = inputs[idx + 1];
           if (next) { e.preventDefault(); next.focus(); }
@@ -158,21 +243,18 @@
      ================================================================== */
   function renderSolverStatus() {
     const el = document.getElementById('solverStatus');
-    const { bidSpot, offerSpot, bidSlope, offerSlope } = state.solved;
-    if (bidSpot === null && offerSpot === null) {
+    const { payerSpot, receiverSpot } = state.solved;
+    const connectedCount = TENORS.filter((t) => state.solved.curve[t].payerPremium !== null || state.solved.curve[t].receiverPremium !== null).length;
+
+    if (payerSpot === null && receiverSpot === null) {
       el.className = 'solver-status warn';
-      el.textContent = 'Enter a Spot rate (or Cash rate + one premium/outright) to begin. The solver will fill in everything else.';
+      el.textContent = connectedCount > 1
+        ? `${connectedCount} tenors linked by points, but no anchor yet — add one real outright rate to see actual levels.`
+        : 'Add points for at least one interval, plus one real outright below to anchor it.';
       return;
     }
-    const parts = [];
-    parts.push(`Spot solved: ${fmtNum(bidSpot)} / ${fmtNum(offerSpot)}`);
-    if (bidSlope !== null || offerSlope !== null) {
-      parts.push(`curve slope ${fmtSigned(bidSlope, 4)} / ${fmtSigned(offerSlope, 4)} pts per day`);
-    } else {
-      parts.push('add one more premium or outright anywhere to project the forward curve');
-    }
     el.className = 'solver-status ok';
-    el.textContent = parts.join(' · ');
+    el.textContent = `Spot solved: Payer ${fmtNum(payerSpot)} / Receiver ${fmtNum(receiverSpot)} · ${connectedCount} of ${TENORS.length} tenors linked`;
   }
 
   /* ==================================================================
@@ -189,14 +271,14 @@
         <td><span class="tenor-name">${c.label}</span></td>
         <td class="mono val-muted">${fmtDateLabel(c.date)}</td>
         <td class="mono val-muted">${c.daysFromSpot}</td>
-        <td class="mono val-bid">${fmtNum(c.bidOutright)}</td>
-        <td class="mono val-offer">${fmtNum(c.offerOutright)}</td>
-        <td class="mono val-bid">${fmtSigned(c.bidPremium)}</td>
-        <td class="mono val-offer">${fmtSigned(c.offerPremium)}</td>
-        <td class="mono val-muted">${fmtSigned(c.bidPremiumPerDay, 4)}</td>
-        <td class="mono val-muted">${fmtSigned(c.offerPremiumPerDay, 4)}</td>
-        <td class="mono val-blue">${fmtSigned(c.bidAnnualized)}%</td>
-        <td class="mono val-blue">${fmtSigned(c.offerAnnualized)}%</td>
+        <td class="mono val-bid">${fmtNum(c.payerOutright)}</td>
+        <td class="mono val-offer">${fmtNum(c.receiverOutright)}</td>
+        <td class="mono val-bid">${fmtSigned(c.payerPremium)}</td>
+        <td class="mono val-offer">${fmtSigned(c.receiverPremium)}</td>
+        <td class="mono val-muted">${fmtSigned(c.payerPremiumPerDay, 4)}</td>
+        <td class="mono val-muted">${fmtSigned(c.receiverPremiumPerDay, 4)}</td>
+        <td class="mono val-blue">${fmtSigned(c.payerAnnualized)}%</td>
+        <td class="mono val-blue">${fmtSigned(c.receiverAnnualized)}%</td>
       `;
       tbody.appendChild(tr);
     });
@@ -214,13 +296,13 @@
       if (t === 'spot') tr.classList.add('row-spot');
       tr.innerHTML = `
         <td class="tenor-name">${c.label}</td>
-        <td class="mono val-bid">${fmtSigned(c.bidPremium)}</td>
-        <td class="mono val-offer">${fmtSigned(c.offerPremium)}</td>
+        <td class="mono val-bid">${fmtSigned(c.payerPremium)}</td>
+        <td class="mono val-offer">${fmtSigned(c.receiverPremium)}</td>
         <td class="mono val-muted">${fmtSigned(c.spreadPremium)}</td>
-        <td class="mono val-bid">${fmtNum(c.bidOutright)}</td>
-        <td class="mono val-offer">${fmtNum(c.offerOutright)}</td>
-        <td class="mono val-muted">${fmtSigned(c.bidPremiumPerDay, 4)}</td>
-        <td class="mono val-muted">${fmtSigned(c.offerPremiumPerDay, 4)}</td>
+        <td class="mono val-bid">${fmtNum(c.payerOutright)}</td>
+        <td class="mono val-offer">${fmtNum(c.receiverOutright)}</td>
+        <td class="mono val-muted">${fmtSigned(c.payerPremiumPerDay, 4)}</td>
+        <td class="mono val-muted">${fmtSigned(c.receiverPremiumPerDay, 4)}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -279,15 +361,15 @@
       resultBox.innerHTML = '<div class="solver-status warn">Not enough of the curve is solved yet to interpolate this date.</div>';
       return;
     }
-    const bidOutright = state.solved.bidSpot !== null ? state.solved.bidSpot + result.bidPremium : null;
-    const offerOutright = state.solved.offerSpot !== null ? state.solved.offerSpot + result.offerPremium : null;
+    const payerOutright = state.solved.payerSpot !== null ? state.solved.payerSpot + result.payerPremium : null;
+    const receiverOutright = state.solved.receiverSpot !== null ? state.solved.receiverSpot + result.receiverPremium : null;
     resultBox.innerHTML = `
       <table class="dealer"><tbody>
         <tr><td class="tenor-name">Days from Spot</td><td class="mono">${result.days}</td></tr>
-        <tr><td class="tenor-name">Interpolated Bid Premium</td><td class="mono val-bid">${fmtSigned(result.bidPremium)}</td></tr>
-        <tr><td class="tenor-name">Interpolated Offer Premium</td><td class="mono val-offer">${fmtSigned(result.offerPremium)}</td></tr>
-        <tr><td class="tenor-name">Bid Outright</td><td class="mono val-bid">${fmtNum(bidOutright)}</td></tr>
-        <tr><td class="tenor-name">Offer Outright</td><td class="mono val-offer">${fmtNum(offerOutright)}</td></tr>
+        <tr><td class="tenor-name">Interpolated Payer Premium</td><td class="mono val-bid">${fmtSigned(result.payerPremium)}</td></tr>
+        <tr><td class="tenor-name">Interpolated Receiver Premium</td><td class="mono val-offer">${fmtSigned(result.receiverPremium)}</td></tr>
+        <tr><td class="tenor-name">Payer Outright</td><td class="mono val-bid">${fmtNum(payerOutright)}</td></tr>
+        <tr><td class="tenor-name">Receiver Outright</td><td class="mono val-offer">${fmtNum(receiverOutright)}</td></tr>
       </tbody></table>
     `;
   }
@@ -328,8 +410,8 @@
     } else {
       box.innerHTML = dates.map((d) => {
         const snap = FXStorage.getSnapshot(d);
-        const spotBid = snap.solved && snap.solved.bidSpot !== null ? fmtNum(snap.solved.bidSpot) : '—';
-        return `<div class="history-row"><span class="mono">${d}</span><span>Spot Bid ${spotBid}</span><button class="btn danger" data-del="${d}" style="padding:3px 8px;">Delete</button></div>`;
+        const spotPayer = snap.solved && snap.solved.payerSpot !== null ? fmtNum(snap.solved.payerSpot) : '—';
+        return `<div class="history-row"><span class="mono">${d}</span><span>Spot Payer ${spotPayer}</span><button class="btn danger" data-del="${d}" style="padding:3px 8px;">Delete</button></div>`;
       }).join('');
       box.querySelectorAll('[data-del]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -358,15 +440,15 @@
     const snapB = FXStorage.getSnapshot(b);
     const rows = TENORS.map((t) => {
       const ca = snapA.solved.curve[t], cb = snapB.solved.curve[t];
-      const diff = (typeof ca.bidPremium === 'number' && typeof cb.bidPremium === 'number') ? cb.bidPremium - ca.bidPremium : null;
+      const diff = (typeof ca.payerPremium === 'number' && typeof cb.payerPremium === 'number') ? cb.payerPremium - ca.payerPremium : null;
       return `<tr>
         <td class="tenor-name">${LABELS[t]}</td>
-        <td class="mono val-bid">${fmtSigned(ca.bidPremium)}</td>
-        <td class="mono val-bid">${fmtSigned(cb.bidPremium)}</td>
+        <td class="mono val-bid">${fmtSigned(ca.payerPremium)}</td>
+        <td class="mono val-bid">${fmtSigned(cb.payerPremium)}</td>
         <td class="mono val-blue">${diff === null ? '—' : fmtSigned(diff)}</td>
       </tr>`;
     }).join('');
-    box.innerHTML = `<table class="dealer"><thead><tr><th>Tenor</th><th>${a} Bid Prem.</th><th>${b} Bid Prem.</th><th>Change</th></tr></thead><tbody>${rows}</tbody></table>`;
+    box.innerHTML = `<table class="dealer"><thead><tr><th>Tenor</th><th>${a} Payer Prem.</th><th>${b} Payer Prem.</th><th>Change</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   /* ==================================================================
@@ -399,6 +481,16 @@
   }
 
   /* ==================================================================
+     Downstream render bundle (everything that depends on state.solved)
+     ================================================================== */
+  function renderDownstream() {
+    renderQuoteScreen();
+    renderSolverStatus();
+    renderCurveTable();
+    if (document.getElementById('view-broken').classList.contains('active')) renderBrokenDate();
+  }
+
+  /* ==================================================================
      Wire up static controls
      ================================================================== */
   function wireStaticControls() {
@@ -411,23 +503,45 @@
       applyTheme(current === 'dark' ? 'light' : 'dark');
     });
 
+    populateTenorSelect(document.getElementById('customFrom'));
+    populateTenorSelect(document.getElementById('customTo'));
+    document.getElementById('customTo').value = TENORS[1];
+
+    document.getElementById('addCustomIntervalBtn').addEventListener('click', () => {
+      const from = document.getElementById('customFrom').value;
+      const to = document.getElementById('customTo').value;
+      if (from === to) { alert('Pick two different value dates.'); return; }
+      state.edges.push({ id: nextEdgeId++, from, to, payer: null, receiver: null });
+      renderIntervalTable();
+      scheduleSaveDraft();
+    });
+
+    populateTenorSelect(document.getElementById('newAnchorNode'));
+    document.getElementById('newAnchorNode').value = 'cash';
+
+    document.getElementById('addAnchorBtn').addEventListener('click', () => {
+      const node = document.getElementById('newAnchorNode').value;
+      state.anchors.push({ id: nextAnchorId++, node, payer: null, receiver: null });
+      renderAnchorTable();
+      scheduleSaveDraft();
+    });
+
     document.getElementById('clearInputsBtn').addEventListener('click', () => {
       if (!confirm('Clear every input field?')) return;
-      TENORS.forEach((t) => {
-        state.rawInput[t] = { bid: { outright: null, premium: null }, offer: { outright: null, premium: null } };
-      });
+      state.edges = makeDefaultEdges();
+      state.anchors = makeDefaultAnchors();
       recompute();
-      renderInputTable();
-      renderQuoteScreen();
-      renderSolverStatus();
-      renderCurveTable();
+      renderIntervalTable();
+      renderAnchorTable();
+      renderDownstream();
       scheduleSaveDraft();
     });
 
     document.getElementById('saveSnapshotBtn').addEventListener('click', () => {
       FXStorage.saveHistorySnapshot(todayKey(), {
         tradeDateKey: todayKey(),
-        rawInput: JSON.parse(JSON.stringify(state.rawInput)),
+        edges: JSON.parse(JSON.stringify(state.edges)),
+        anchors: JSON.parse(JSON.stringify(state.anchors)),
         solved: JSON.parse(JSON.stringify(state.solved)),
       });
       alert(`Saved quotes for ${todayKey()} to history.`);
@@ -458,13 +572,12 @@
       FXExcel.generatePDFReport(state.solved.curve, {
         pair: state.pair,
         tradeDateLabel: fmtDateLabel(state.tradeDate),
-        spotBid: fmtNum(state.solved.bidSpot),
-        spotOffer: fmtNum(state.solved.offerSpot),
+        spotBid: fmtNum(state.solved.payerSpot),
+        spotOffer: fmtNum(state.solved.receiverSpot),
       });
     });
 
-    document.getElementById('applyPasteBtn').addEventListener('click', () => applyPaste('outright'));
-    document.getElementById('applyPastePremiumBtn').addEventListener('click', () => applyPaste('premium'));
+    document.getElementById('applyPasteBtn').addEventListener('click', applyPasteAsAnchors);
 
     document.getElementById('brokenDateInput').addEventListener('change', renderBrokenDate);
 
@@ -487,57 +600,59 @@
       if (!val) return;
       FXCalendar.addCustomHoliday(val);
       recompute();
-      renderAllDateViews();
+      renderAllViews();
       renderHolidayList();
       alert(`Added ${val} as a bank holiday. Value dates recalculated.`);
     });
   }
 
+  /** Excel import: expects columns Tenor, Payer (or Bid), Receiver (or Offer) — applied as anchors. */
   function applyImportedRows(rows) {
     let applied = 0;
     rows.forEach((row) => {
       const label = String(row.Tenor || row.tenor || '').toLowerCase();
       const key = TENORS.find((t) => LABELS[t].toLowerCase() === label || t.toLowerCase() === label);
       if (!key) return;
-      const bid = parseFloat(row.Bid ?? row.bid);
-      const offer = parseFloat(row.Offer ?? row.offer);
-      if (isFinite(bid)) state.rawInput[key].bid.outright = bid;
-      if (isFinite(offer)) state.rawInput[key].offer.outright = offer;
+      const payer = parseFloat(row.Payer ?? row.payer ?? row.Bid ?? row.bid);
+      const receiver = parseFloat(row.Receiver ?? row.receiver ?? row.Offer ?? row.offer);
+      const existing = state.anchors.find((a) => a.node === key);
+      const target = existing || { id: nextAnchorId++, node: key, payer: null, receiver: null };
+      if (isFinite(payer)) target.payer = payer;
+      if (isFinite(receiver)) target.receiver = receiver;
+      if (!existing) state.anchors.push(target);
       applied++;
     });
     recompute();
-    renderInputTable();
-    renderQuoteScreen();
-    renderSolverStatus();
-    renderCurveTable();
+    renderAnchorTable();
+    renderDownstream();
     scheduleSaveDraft();
-    alert(`Imported ${applied} tenor rows.`);
+    alert(`Imported ${applied} tenor rows as anchors.`);
   }
 
-  function applyPaste(field) {
+  function applyPasteAsAnchors() {
     const text = document.getElementById('pasteBox').value;
     const parsed = FXExcel.parsePastedQuotes(text);
     parsed.forEach((row) => {
-      if (row.bid !== null) state.rawInput[row.tenorKey].bid[field] = row.bid;
-      if (row.offer !== null) state.rawInput[row.tenorKey].offer[field] = row.offer;
+      const existing = state.anchors.find((a) => a.node === row.tenorKey);
+      const target = existing || { id: nextAnchorId++, node: row.tenorKey, payer: null, receiver: null };
+      if (row.bid !== null) target.payer = row.bid;
+      if (row.offer !== null) target.receiver = row.offer;
+      if (!existing) state.anchors.push(target);
     });
     recompute();
-    renderInputTable();
-    renderQuoteScreen();
-    renderSolverStatus();
-    renderCurveTable();
+    renderAnchorTable();
+    renderDownstream();
     scheduleSaveDraft();
-    alert(`Applied ${parsed.length} pasted rows to ${field}.`);
+    alert(`Applied ${parsed.length} pasted rows as anchors.`);
   }
 
-  function renderAllDateViews() {
+  function renderAllViews() {
     renderHeader();
     renderLadder();
     renderDateDetail();
-    renderInputTable();
-    renderQuoteScreen();
-    renderSolverStatus();
-    renderCurveTable();
+    renderIntervalTable();
+    renderAnchorTable();
+    renderDownstream();
   }
 
   /* ==================================================================
@@ -552,7 +667,7 @@
     document.getElementById('pairInput').value = state.pair;
 
     wireStaticControls();
-    renderAllDateViews();
+    renderAllViews();
   }
 
   document.addEventListener('DOMContentLoaded', init);
