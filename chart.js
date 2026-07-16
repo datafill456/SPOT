@@ -39,16 +39,16 @@ const FXCharts = (function () {
     destroy(canvasId);
     const tenors = FXCalculator.TENOR_ORDER;
     const labels = tenors.map((t) => curve[t].label);
-    const bid = tenors.map((t) => curve[t].bidOutright);
-    const offer = tenors.map((t) => curve[t].offerOutright);
+    const bid = tenors.map((t) => curve[t].payerOutright);
+    const offer = tenors.map((t) => curve[t].receiverOutright);
 
     instances[canvasId] = new Chart(document.getElementById(canvasId), {
       type: 'line',
       data: {
         labels,
         datasets: [
-          { label: 'Bid Outright', data: bid, borderColor: '#2ecc71', backgroundColor: 'transparent', tension: 0.25 },
-          { label: 'Offer Outright', data: offer, borderColor: '#ff5252', backgroundColor: 'transparent', tension: 0.25 },
+          { label: 'Payer Outright', data: bid, borderColor: '#2ecc71', backgroundColor: 'transparent', tension: 0.25 },
+          { label: 'Receiver Outright', data: offer, borderColor: '#ff5252', backgroundColor: 'transparent', tension: 0.25 },
         ],
       },
       options: baseOptions('Rate'),
@@ -59,16 +59,16 @@ const FXCharts = (function () {
     destroy(canvasId);
     const tenors = FXCalculator.TENOR_ORDER.filter((t) => t !== 'spot');
     const labels = tenors.map((t) => curve[t].label);
-    const bid = tenors.map((t) => curve[t].bidPremiumPerDay);
-    const offer = tenors.map((t) => curve[t].offerPremiumPerDay);
+    const bid = tenors.map((t) => curve[t].payerPremiumPerDay);
+    const offer = tenors.map((t) => curve[t].receiverPremiumPerDay);
 
     instances[canvasId] = new Chart(document.getElementById(canvasId), {
       type: 'bar',
       data: {
         labels,
         datasets: [
-          { label: 'Bid Premium / Day', data: bid, backgroundColor: '#2ecc71' },
-          { label: 'Offer Premium / Day', data: offer, backgroundColor: '#ff5252' },
+          { label: 'Payer Premium / Day', data: bid, backgroundColor: '#2ecc71' },
+          { label: 'Receiver Premium / Day', data: offer, backgroundColor: '#ff5252' },
         ],
       },
       options: baseOptions('Points per day'),
@@ -79,16 +79,16 @@ const FXCharts = (function () {
     destroy(canvasId);
     const tenors = FXCalculator.TENOR_ORDER.filter((t) => t !== 'spot');
     const labels = tenors.map((t) => curve[t].label);
-    const bid = tenors.map((t) => curve[t].bidAnnualized);
-    const offer = tenors.map((t) => curve[t].offerAnnualized);
+    const bid = tenors.map((t) => curve[t].payerAnnualized);
+    const offer = tenors.map((t) => curve[t].receiverAnnualized);
 
     instances[canvasId] = new Chart(document.getElementById(canvasId), {
       type: 'line',
       data: {
         labels,
         datasets: [
-          { label: 'Bid Annualized %', data: bid, borderColor: '#4da3ff', backgroundColor: 'transparent', tension: 0.25 },
-          { label: 'Offer Annualized %', data: offer, borderColor: '#f5a623', backgroundColor: 'transparent', tension: 0.25 },
+          { label: 'Payer Annualized %', data: bid, borderColor: '#4da3ff', backgroundColor: 'transparent', tension: 0.25 },
+          { label: 'Receiver Annualized %', data: offer, borderColor: '#f5a623', backgroundColor: 'transparent', tension: 0.25 },
         ],
       },
       options: baseOptions('% p.a.'),
@@ -98,16 +98,16 @@ const FXCharts = (function () {
   function renderHistory(canvasId, historySnapshots, tenorKey) {
     destroy(canvasId);
     const dates = Object.keys(historySnapshots).sort();
-    const bid = dates.map((d) => historySnapshots[d]?.curve?.[tenorKey]?.bidPremium ?? null);
-    const offer = dates.map((d) => historySnapshots[d]?.curve?.[tenorKey]?.offerPremium ?? null);
+    const bid = dates.map((d) => historySnapshots[d]?.curve?.[tenorKey]?.payerPremium ?? null);
+    const offer = dates.map((d) => historySnapshots[d]?.curve?.[tenorKey]?.receiverPremium ?? null);
 
     instances[canvasId] = new Chart(document.getElementById(canvasId), {
       type: 'line',
       data: {
         labels: dates,
         datasets: [
-          { label: `${tenorKey} Bid Premium`, data: bid, borderColor: '#2ecc71', backgroundColor: 'transparent', tension: 0.2 },
-          { label: `${tenorKey} Offer Premium`, data: offer, borderColor: '#ff5252', backgroundColor: 'transparent', tension: 0.2 },
+          { label: `${tenorKey} Payer Premium`, data: bid, borderColor: '#2ecc71', backgroundColor: 'transparent', tension: 0.2 },
+          { label: `${tenorKey} Receiver Premium`, data: offer, borderColor: '#ff5252', backgroundColor: 'transparent', tension: 0.2 },
         ],
       },
       options: baseOptions('Premium'),
