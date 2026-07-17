@@ -199,6 +199,8 @@ input.cell-input:focus {
 input.cell-input.bid-input { color: var(--green); }
 input.cell-input.offer-input { color: var(--red); }
 input.cell-input::placeholder { color: var(--text-muted); opacity: 0.5; }
+input.cell-input.auto-filled { color: var(--text-muted); font-style: italic; }
+input.cell-input.shorthand { width: 100px; text-align: center; }
 
 /* ---------------- Buttons ---------------- */
 .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
