@@ -41,6 +41,48 @@ December for the following year** — nothing else in the code needs to
 change. Dealers can also add one-off holidays from the Settings tab;
 those are merged in from LocalStorage automatically.
 
+## Fast Entry — Big Figure, shorthand, auto-fill
+
+The Dealer Quotes tab is one row per tenor, **Rate on the left, Premium
+(vs Spot) on the right**, typed as shorthand:
+
+- **Big Figure** — the shared whole-number part (e.g. `336`), typed once.
+- **Rate box** — `30/40` → Payer 336.30 / Receiver 336.40 (Big Figure +
+  points). Leave Big Figure blank and type full rates instead, e.g.
+  `336.30/336.40` — the box detects which you meant (a number under
+  100 is treated as points off the Big Figure).
+- **Premium box** — `5/5.5` → Payer premium 5 / Receiver premium 5.5,
+  vs Spot. A single value with no `/` applies to both sides.
+- Any box left empty **auto-fills with the solved answer**, shown in
+  muted italics so you can tell typed vs. calculated at a glance. Click
+  into it to type over it; it reformats back to the clean solved value
+  on blur if you clear it again.
+
+**Cash & Tom — per-day, subtracted:** these two carry a "Per Day"
+checkbox (checked by default). With it checked, the premium you type
+is treated as **points per day** and is:
+1. multiplied by the actual calendar days from that date to Spot, then
+2. **subtracted** from Spot (near dates trade at a discount to Spot).
+
+Worked example: Big Figure `336`, Spot `20/40` (→ 336.20/336.40), Cash
+premium `5/5.5` per day, 4 calendar days to Spot →
+`Cash = 336.20 − 0.05×4 = 336.00` (payer), `336.40 − 0.055×4 = 336.18`
+(receiver) — filled straight into Cash's Rate box automatically.
+
+Forward tenors (1W…12M) work the opposite way: the premium you type is
+added to Spot directly, as a literal total for that tenor (no per-day
+scaling), matching how those are normally quoted.
+
+If your desk's actual sign convention or point-scaling differs from
+this (e.g. Cash should sometimes be a premium rather than a discount,
+or the near-date points shouldn't be divided by 100), tell me one real
+worked example with the numbers you'd expect and I'll adjust just that
+formula in `script.js` (`premiumToEdgeValue`).
+
+An **Advanced** panel (collapsed by default) still exposes the
+underlying interval graph directly, for occasional extra pairs like
+1M–2M forward-forward that don't fit the standard ladder.
+
 ## How the solver works — swap points between any two dates
 
 Real desks don't quote a premium "for a date" — they quote **points
