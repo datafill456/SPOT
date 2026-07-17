@@ -38,45 +38,48 @@
 <section class="view active" id="view-dealer">
 
   <div class="card">
-    <h2>Swap Points by Interval <span class="hint">Cash-Tom, Tom-Spot, Spot-tenor, forward-to-forward — enter only the intervals you have</span></h2>
-    <div id="solverStatus" class="solver-status">Add points for at least one interval, plus one real outright below to anchor it.</div>
+    <h2>Fast Entry <span class="hint">Rate on the left, premium (vs Spot) on the right — type shorthand, Tab down the column</span></h2>
+    <div id="solverStatus" class="solver-status">Set a Big Figure, then type Spot's rate — everything else can chain off it.</div>
+
+    <div style="margin-bottom:14px;">
+      <label class="field-label">Big Figure <span class="small-text">(shared whole-number part, e.g. 336 — leave blank to type full rates)</span></label>
+      <input type="text" id="bigFigureInput" class="cell-input" style="width:100px;" placeholder="336">
+    </div>
+
     <div style="overflow-x:auto;">
-      <table class="dealer" id="intervalTable">
+      <table class="dealer" id="ladderTable">
         <thead>
           <tr>
-            <th>Interval</th>
-            <th>Payer Points</th>
-            <th>Receiver Points</th>
-            <th></th>
+            <th>Tenor</th>
+            <th>Rate <span class="hint">payer/receiver, e.g. 30/40</span></th>
+            <th>Premium vs Spot <span class="hint">payer/receiver, e.g. 5/5.5</span></th>
+            <th>Per Day</th>
           </tr>
         </thead>
-        <tbody id="intervalTableBody"></tbody>
+        <tbody id="ladderTableBody"></tbody>
       </table>
     </div>
-    <div class="btn-row" style="margin-top:10px;">
-      <select id="customFrom" class="cell-input" style="width:110px;"></select>
-      <span class="small-text">to</span>
-      <select id="customTo" class="cell-input" style="width:110px;"></select>
-      <button class="btn" id="addCustomIntervalBtn">Add Custom Interval</button>
-    </div>
-  </div>
 
-  <div class="card">
-    <h2>Absolute Anchor <span class="hint">The one (or more) real traded outright rate that pins the whole chain</span></h2>
-    <div style="overflow-x:auto;">
-      <table class="dealer" id="anchorTable">
-        <thead><tr><th>Value Date</th><th>Payer Rate</th><th>Receiver Rate</th><th></th></tr></thead>
-        <tbody id="anchorTableBody"></tbody>
-      </table>
-    </div>
-    <div class="btn-row" style="margin-top:10px;">
-      <select id="newAnchorNode" class="cell-input" style="width:110px;"></select>
-      <button class="btn" id="addAnchorBtn">Add Anchor</button>
-    </div>
     <div class="btn-row" style="margin-top:14px;">
       <button class="btn" id="clearInputsBtn">Clear All Inputs</button>
       <button class="btn primary" id="saveSnapshotBtn">Save Today's Quotes to History</button>
     </div>
+
+    <details style="margin-top:16px;">
+      <summary style="cursor:pointer;color:var(--text-muted);font-size:12px;">Advanced: extra intervals (e.g. 1M–2M forward-forward)</summary>
+      <div style="overflow-x:auto;margin-top:10px;">
+        <table class="dealer" id="intervalTable">
+          <thead><tr><th>Interval</th><th>Payer Points</th><th>Receiver Points</th><th></th></tr></thead>
+          <tbody id="intervalTableBody"></tbody>
+        </table>
+      </div>
+      <div class="btn-row" style="margin-top:10px;">
+        <select id="customFrom" class="cell-input" style="width:110px;"></select>
+        <span class="small-text">to</span>
+        <select id="customTo" class="cell-input" style="width:110px;"></select>
+        <button class="btn" id="addCustomIntervalBtn">Add Custom Interval</button>
+      </div>
+    </details>
   </div>
 
   <div class="card">
