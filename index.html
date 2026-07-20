@@ -24,21 +24,14 @@
   </div>
 </header>
 
-<nav class="tabs" id="tabs">
-  <button class="tab-btn active" data-view="dealer">Dealer Quotes</button>
-  <button class="tab-btn" data-view="dates">Value Dates</button>
-  <button class="tab-btn" data-view="curve">Premium Curve</button>
-  <button class="tab-btn" data-view="broken">Broken Date</button>
-  <button class="tab-btn" data-view="charts">Charts</button>
-  <button class="tab-btn" data-view="history">History</button>
-  <button class="tab-btn" data-view="settings">Settings</button>
-</nav>
-
-<!-- ===================== DEALER QUOTES ===================== -->
 <section class="view active" id="view-dealer">
 
   <div class="card">
     <h2>Fast Entry <span class="hint">Rate on the left, premium (vs Spot) on the right — type shorthand, Tab down the column</span></h2>
+    <div class="small-text" style="margin-bottom:10px;">
+      <strong style="color:var(--green);">Payer</strong> = Sell now / Buy forward (pays the premium) &nbsp;·&nbsp;
+      <strong style="color:var(--red);">Receiver</strong> = Buy now / Sell forward (receives the premium)
+    </div>
     <div id="solverStatus" class="solver-status">Set a Big Figure, then type Spot's rate — everything else can chain off it.</div>
 
     <div style="margin-bottom:14px;">
@@ -62,7 +55,6 @@
 
     <div class="btn-row" style="margin-top:14px;">
       <button class="btn" id="clearInputsBtn">Clear All Inputs</button>
-      <button class="btn primary" id="saveSnapshotBtn">Save Today's Quotes to History</button>
     </div>
 
     <details style="margin-top:16px;">
@@ -91,10 +83,10 @@
             <th>Tenor</th>
             <th>Value Date</th>
             <th>Days</th>
-            <th>Payer Outright</th>
-            <th>Receiver Outright</th>
-            <th>Payer Prem.</th>
-            <th>Receiver Prem.</th>
+            <th>Payer Outright <span class="hint">(Sell/Buy)</span></th>
+            <th>Receiver Outright <span class="hint">(Buy/Sell)</span></th>
+            <th>Payer Prem. <span class="hint">(Sell/Buy)</span></th>
+            <th>Receiver Prem. <span class="hint">(Buy/Sell)</span></th>
             <th>Payer/Day</th>
             <th>Receiver/Day</th>
             <th>Payer Ann. %</th>
@@ -117,114 +109,20 @@
       <button class="btn primary" id="generatePdfBtn">Generate PDF Report</button>
     </div>
     <div style="margin-top:14px;">
-      <label class="field-label">Paste Anchor Quotes (Tenor&#9;Payer&#9;Receiver per line — sets the Absolute Anchor rows)</label>
-      <textarea class="paste-box" id="pasteBox" placeholder="Spot	312.80	312.50
-1M	314.00	313.50"></textarea>
-      <div class="btn-row"><button class="btn" id="applyPasteBtn">Apply Pasted Quotes as Anchors</button></div>
+      <label class="field-label">Paste Dealer Quotes (Tenor&#9;Payer&#9;Receiver per line — sets the Rate boxes)</label>
+      <textarea class="paste-box" id="pasteBox" placeholder="Spot	336.20	336.40
+1M	337.00	337.60"></textarea>
+      <div class="btn-row"><button class="btn" id="applyPasteBtn">Apply Pasted Quotes to Rates</button></div>
     </div>
   </div>
 
 </section>
 
-<!-- ===================== VALUE DATES ===================== -->
-<section class="view" id="view-dates">
-  <div class="card">
-    <h2>Automatic Value Date Ladder <span class="hint">Skips Saturdays, Sundays &amp; Sri Lankan bank holidays</span></h2>
-    <div class="ladder" id="ladderBox"></div>
-  </div>
-  <div class="card">
-    <h2>Working Day Detail</h2>
-    <div style="overflow-x:auto;">
-      <table class="dealer" id="dateDetailTable">
-        <thead><tr><th>Tenor</th><th>Value Date</th><th>Weekday</th><th>Days from Cash</th><th>Days from Spot</th></tr></thead>
-        <tbody id="dateDetailBody"></tbody>
-      </table>
-    </div>
-  </div>
-</section>
-
-<!-- ===================== PREMIUM CURVE ===================== -->
-<section class="view" id="view-curve">
-  <div class="card">
-    <h2>Complete Premium Curve</h2>
-    <div style="overflow-x:auto;">
-      <table class="dealer" id="curveTable">
-        <thead>
-          <tr><th>Tenor</th><th>Payer Prem.</th><th>Receiver Prem.</th><th>Spread</th><th>Outright Payer</th><th>Outright Receiver</th><th>Payer/Day</th><th>Receiver/Day</th></tr>
-        </thead>
-        <tbody id="curveTableBody"></tbody>
-      </table>
-    </div>
-  </div>
-</section>
-
-<!-- ===================== BROKEN DATE ===================== -->
-<section class="view" id="view-broken">
-  <div class="card">
-    <h2>Broken Date / Odd-Date Calculator <span class="hint">Interpolated between the two nearest standard tenors</span></h2>
-    <label class="field-label">Custom Value Date</label>
-    <input type="date" id="brokenDateInput" class="cell-input" style="width:180px;">
-    <div id="brokenResult" style="margin-top:16px;"></div>
-  </div>
-</section>
-
-<!-- ===================== CHARTS ===================== -->
-<section class="view" id="view-charts">
-  <div class="grid-2">
-    <div class="card"><h2>Forward Curve (Outright)</h2><div class="chart-box"><canvas id="chartForward"></canvas></div></div>
-    <div class="card"><h2>Premium Per Day</h2><div class="chart-box"><canvas id="chartPerDay"></canvas></div></div>
-    <div class="card"><h2>Annualized Premium %</h2><div class="chart-box"><canvas id="chartAnnualized"></canvas></div></div>
-    <div class="card">
-      <h2>Premium History <span class="hint">by tenor, across saved days</span></h2>
-      <select id="historyTenorSelect" class="cell-input" style="width:140px;margin-bottom:10px;"></select>
-      <div class="chart-box"><canvas id="chartHistory"></canvas></div>
-    </div>
-  </div>
-</section>
-
-<!-- ===================== HISTORY ===================== -->
-<section class="view" id="view-history">
-  <div class="card">
-    <h2>Saved Daily Quotes</h2>
-    <div class="history-list" id="historyList"></div>
-    <div class="btn-row"><button class="btn" id="exportHistoryBtn">Export Full History (JSON)</button></div>
-  </div>
-  <div class="card">
-    <h2>Compare Two Trading Days</h2>
-    <div class="grid-2">
-      <div><label class="field-label">Day A</label><select id="compareA" class="cell-input" style="width:100%;"></select></div>
-      <div><label class="field-label">Day B</label><select id="compareB" class="cell-input" style="width:100%;"></select></div>
-    </div>
-    <div class="btn-row"><button class="btn primary" id="runCompareBtn">Compare</button></div>
-    <div id="compareResult" style="margin-top:14px;overflow-x:auto;"></div>
-  </div>
-</section>
-
-<!-- ===================== SETTINGS ===================== -->
-<section class="view" id="view-settings">
-  <div class="card">
-    <h2>Currency Pair</h2>
-    <input type="text" id="pairInput" class="cell-input" style="width:160px;" value="USD/LKR">
-  </div>
-  <div class="card">
-    <h2>Add a Custom Bank Holiday</h2>
-    <input type="date" id="customHolidayInput" class="cell-input" style="width:180px;">
-    <button class="btn" id="addHolidayBtn">Add Holiday</button>
-    <div class="small-text" style="margin-top:10px;">Custom holidays are stored locally and merged with the built-in 2026 CBSL calendar.</div>
-  </div>
-  <div class="card">
-    <h2>Current Holiday List</h2>
-    <div id="holidayListBox" class="small-text mono" style="max-height:220px;overflow-y:auto;"></div>
-  </div>
-</section>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="calendar.js"></script>
 <script src="calculator.js"></script>
 <script src="storage.js"></script>
 <script src="excel.js"></script>
-<script src="chart.js"></script>
 <script src="script.js"></script>
 </body>
 </html>
