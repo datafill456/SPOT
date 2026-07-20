@@ -1,7 +1,8 @@
 /* ============================================================
    script.js
-   Wires calendar.js / calculator.js / storage.js / excel.js /
-   chart.js together into the running application.
+   Wires calendar.js / calculator.js / storage.js / excel.js
+   together for the single Dealer Quotes screen: Fast Entry ladder,
+   the read-only Dealer Quote Screen board, and Excel/PDF reports.
 
    FAST ENTRY MODEL
    -----------------
@@ -9,20 +10,22 @@
      - Rate      "30/40"  -> Big Figure + points -> payer/receiver outright
      - Premium   "5/5.5"  -> points vs Spot -> payer/receiver premium
    Cash & Tom carry a "Per Day" toggle: their premium is quoted PER DAY
-   (in points, i.e. hundredths of a rate unit) and gets multiplied by
-   the actual number of calendar days to Spot, then SUBTRACTED from
-   Spot (near dates trade at a discount you subtract), e.g.:
-     Spot 336.20/336.40, Cash premium 5/5.5 per day, 2 days to Spot
-     -> Cash = 336.20 - 0.05*2 = 336.10 (payer), 336.40 - 0.055*2 = 336.29 (receiver)
+   and gets multiplied by the actual number of calendar days to Spot,
+   then SUBTRACTED from Spot (near dates trade at a discount you
+   subtract), e.g.:
+     Spot 336.20/336.40, Cash premium 5/5.5 per day, 4 days to Spot
+     -> Cash = 336.20 - 0.05*4 = 336.00 (payer), 336.40 - 0.055*4 = 336.18 (receiver)
    Forward tenors (1W...12M) add the premium to Spot directly, as
-   typed (no day multiplication, no /100 scaling), matching how those
-   are already quoted as whole points over the tenor.
+   typed (no day multiplication, no /100 scaling).
 
    Every row's Rate feeds the solver as an ANCHOR; every row's
    Premium feeds it as an EDGE from Spot to that tenor. The solver
-   itself (calculator.js) is the same general interval graph as
-   before, so the "Advanced" panel can still add arbitrary extra
-   intervals (e.g. 1M-2M) on top of this fast path.
+   (calculator.js) is a general interval graph, so the "Advanced"
+   panel can add arbitrary extra intervals (e.g. 1M-2M) on top.
+
+   PAYER / RECEIVER = Sell-now/Buy-forward vs Buy-now/Sell-forward
+   (standard FX swap terminology) — Payer pays the premium, Receiver
+   receives it.
    ============================================================ */
 
 (function () {
@@ -134,7 +137,6 @@
       state.rows = draft.rows;
       state.bigFigure = draft.bigFigure || '';
       state.customEdges = draft.customEdges || [];
-      state.pair = draft.pair || state.pair;
       nextEdgeId = Math.max(1, ...state.customEdges.map((e) => e.id + 1), 1);
     } else {
       state.rows = makeDefaultRows();
@@ -165,9 +167,6 @@
   }
   function fmtDateLabel(d) {
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
-  }
-  function weekdayLabel(d) {
-    return d.toLocaleDateString('en-US', { weekday: 'short' });
   }
 
   function renderHeader() {
@@ -407,193 +406,6 @@
   }
 
   /* ==================================================================
-     RENDER: Premium Curve tab
-     ================================================================== */
-  function renderCurveTable() {
-    const tbody = document.getElementById('curveTableBody');
-    tbody.innerHTML = '';
-    TENORS.forEach((t) => {
-      const c = state.solved.curve[t];
-      const tr = document.createElement('tr');
-      if (t === 'spot') tr.classList.add('row-spot');
-      tr.innerHTML = `
-        <td class="tenor-name">${c.label}</td>
-        <td class="mono val-bid">${fmtSigned(c.payerPremium)}</td>
-        <td class="mono val-offer">${fmtSigned(c.receiverPremium)}</td>
-        <td class="mono val-muted">${fmtSigned(c.spreadPremium)}</td>
-        <td class="mono val-bid">${fmtNum(c.payerOutright)}</td>
-        <td class="mono val-offer">${fmtNum(c.receiverOutright)}</td>
-        <td class="mono val-muted">${fmtSigned(c.payerPremiumPerDay, 4)}</td>
-        <td class="mono val-muted">${fmtSigned(c.receiverPremiumPerDay, 4)}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-  }
-
-  /* ==================================================================
-     RENDER: Value Dates tab
-     ================================================================== */
-  function renderLadder() {
-    const box = document.getElementById('ladderBox');
-    box.innerHTML = '';
-    TENORS.forEach((t) => {
-      const date = state.valueDates.dates[t];
-      const days = state.valueDates.days[t];
-      const chip = document.createElement('div');
-      chip.className = 'ladder-chip';
-      chip.innerHTML = `
-        <div class="t">${LABELS[t]}</div>
-        <div class="d mono">${fmtDateLabel(date)}</div>
-        <div class="n">${weekdayLabel(date)} · ${days >= 0 ? '+' : ''}${days}d from Spot</div>
-      `;
-      box.appendChild(chip);
-    });
-  }
-
-  function renderDateDetail() {
-    const tbody = document.getElementById('dateDetailBody');
-    tbody.innerHTML = '';
-    const cashDate = state.valueDates.cash;
-    TENORS.forEach((t) => {
-      const date = state.valueDates.dates[t];
-      const daysFromCash = FXCalendar.calendarDaysBetween(cashDate, date);
-      const daysFromSpot = state.valueDates.days[t];
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td class="tenor-name">${LABELS[t]}</td>
-        <td class="mono">${fmtDateLabel(date)}</td>
-        <td class="mono val-muted">${weekdayLabel(date)}</td>
-        <td class="mono">${daysFromCash}</td>
-        <td class="mono">${daysFromSpot}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-  }
-
-  /* ==================================================================
-     RENDER: Broken date tab
-     ================================================================== */
-  function renderBrokenDate() {
-    const input = document.getElementById('brokenDateInput');
-    const resultBox = document.getElementById('brokenResult');
-    if (!input.value) { resultBox.innerHTML = '<div class="small-text">Pick a date above.</div>'; return; }
-    const target = new Date(input.value + 'T00:00:00');
-    const result = FXCalculator.interpolateBrokenDate(state.solved.curve, target, state.valueDates.spot);
-    if (!result) {
-      resultBox.innerHTML = '<div class="solver-status warn">Not enough of the curve is solved yet to interpolate this date.</div>';
-      return;
-    }
-    const payerOutright = state.solved.payerSpot !== null ? state.solved.payerSpot + result.payerPremium : null;
-    const receiverOutright = state.solved.receiverSpot !== null ? state.solved.receiverSpot + result.receiverPremium : null;
-    resultBox.innerHTML = `
-      <table class="dealer"><tbody>
-        <tr><td class="tenor-name">Days from Spot</td><td class="mono">${result.days}</td></tr>
-        <tr><td class="tenor-name">Interpolated Payer Premium</td><td class="mono val-bid">${fmtSigned(result.payerPremium)}</td></tr>
-        <tr><td class="tenor-name">Interpolated Receiver Premium</td><td class="mono val-offer">${fmtSigned(result.receiverPremium)}</td></tr>
-        <tr><td class="tenor-name">Payer Outright</td><td class="mono val-bid">${fmtNum(payerOutright)}</td></tr>
-        <tr><td class="tenor-name">Receiver Outright</td><td class="mono val-offer">${fmtNum(receiverOutright)}</td></tr>
-      </tbody></table>
-    `;
-  }
-
-  /* ==================================================================
-     RENDER: Charts tab
-     ================================================================== */
-  function renderCharts() {
-    FXCharts.renderForwardCurve('chartForward', state.solved.curve);
-    FXCharts.renderPremiumPerDay('chartPerDay', state.solved.curve);
-    FXCharts.renderAnnualized('chartAnnualized', state.solved.curve);
-    renderHistoryTenorSelect();
-    renderHistoryChart();
-  }
-
-  function renderHistoryTenorSelect() {
-    const sel = document.getElementById('historyTenorSelect');
-    if (sel.dataset.built) return;
-    sel.innerHTML = TENORS.filter((t) => t !== 'cash' && t !== 'tom')
-      .map((t) => `<option value="${t}">${LABELS[t]}</option>`).join('');
-    sel.dataset.built = '1';
-    sel.addEventListener('change', renderHistoryChart);
-  }
-
-  function renderHistoryChart() {
-    const tenor = document.getElementById('historyTenorSelect').value || 'spot';
-    FXCharts.renderHistory('chartHistory', FXStorage.getHistory(), tenor);
-  }
-
-  /* ==================================================================
-     RENDER: History tab
-     ================================================================== */
-  function renderHistoryList() {
-    const box = document.getElementById('historyList');
-    const dates = FXStorage.listSnapshotDates().reverse();
-    if (!dates.length) {
-      box.innerHTML = '<div class="small-text">No saved days yet. Use "Save Today\'s Quotes to History" on the Dealer Quotes tab.</div>';
-    } else {
-      box.innerHTML = dates.map((d) => {
-        const snap = FXStorage.getSnapshot(d);
-        const spotPayer = snap.solved && snap.solved.payerSpot !== null ? fmtNum(snap.solved.payerSpot) : '—';
-        return `<div class="history-row"><span class="mono">${d}</span><span>Spot Payer ${spotPayer}</span><button class="btn danger" data-del="${d}" style="padding:3px 8px;">Delete</button></div>`;
-      }).join('');
-      box.querySelectorAll('[data-del]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          FXStorage.deleteSnapshot(btn.dataset.del);
-          renderHistoryList();
-          renderCompareSelectors();
-        });
-      });
-    }
-    renderCompareSelectors();
-  }
-
-  function renderCompareSelectors() {
-    const dates = FXStorage.listSnapshotDates();
-    const opts = dates.map((d) => `<option value="${d}">${d}</option>`).join('');
-    document.getElementById('compareA').innerHTML = opts;
-    document.getElementById('compareB').innerHTML = opts;
-  }
-
-  function runCompare() {
-    const a = document.getElementById('compareA').value;
-    const b = document.getElementById('compareB').value;
-    const box = document.getElementById('compareResult');
-    if (!a || !b) { box.innerHTML = '<div class="small-text">Select two saved days.</div>'; return; }
-    const snapA = FXStorage.getSnapshot(a);
-    const snapB = FXStorage.getSnapshot(b);
-    const rows = TENORS.map((t) => {
-      const ca = snapA.solved.curve[t], cb = snapB.solved.curve[t];
-      const diff = (typeof ca.payerPremium === 'number' && typeof cb.payerPremium === 'number') ? cb.payerPremium - ca.payerPremium : null;
-      return `<tr>
-        <td class="tenor-name">${LABELS[t]}</td>
-        <td class="mono val-bid">${fmtSigned(ca.payerPremium)}</td>
-        <td class="mono val-bid">${fmtSigned(cb.payerPremium)}</td>
-        <td class="mono val-blue">${diff === null ? '—' : fmtSigned(diff)}</td>
-      </tr>`;
-    }).join('');
-    box.innerHTML = `<table class="dealer"><thead><tr><th>Tenor</th><th>${a} Payer Prem.</th><th>${b} Payer Prem.</th><th>Change</th></tr></thead><tbody>${rows}</tbody></table>`;
-  }
-
-  /* ==================================================================
-     RENDER: Settings tab
-     ================================================================== */
-  function renderHolidayList() {
-    const box = document.getElementById('holidayListBox');
-    box.innerHTML = FXCalendar.listHolidays().map((iso) => `${iso} — ${SL_HOLIDAY_NAMES_2026[iso] || 'Custom holiday'}`).join('<br>');
-  }
-
-  /* ==================================================================
-     Tabs
-     ================================================================== */
-  function switchTab(view) {
-    document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
-    document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
-    if (view === 'charts') renderCharts();
-    if (view === 'history') renderHistoryList();
-    if (view === 'broken') renderBrokenDate();
-    if (view === 'settings') renderHolidayList();
-  }
-
-  /* ==================================================================
      Theme
      ================================================================== */
   function applyTheme(theme) {
@@ -608,18 +420,12 @@
   function renderDownstream() {
     renderQuoteScreen();
     renderSolverStatus();
-    renderCurveTable();
-    if (document.getElementById('view-broken').classList.contains('active')) renderBrokenDate();
   }
 
   /* ==================================================================
      Wire up static controls
      ================================================================== */
   function wireStaticControls() {
-    document.querySelectorAll('.tab-btn').forEach((btn) => {
-      btn.addEventListener('click', () => switchTab(btn.dataset.view));
-    });
-
     document.getElementById('themeToggle').addEventListener('click', () => {
       const current = document.documentElement.getAttribute('data-theme');
       applyTheme(current === 'dark' ? 'light' : 'dark');
@@ -659,18 +465,6 @@
       scheduleSaveDraft();
     });
 
-    document.getElementById('saveSnapshotBtn').addEventListener('click', () => {
-      FXStorage.saveHistorySnapshot(todayKey(), {
-        tradeDateKey: todayKey(),
-        rows: JSON.parse(JSON.stringify(state.rows)),
-        bigFigure: state.bigFigure,
-        customEdges: JSON.parse(JSON.stringify(state.customEdges)),
-        solved: JSON.parse(JSON.stringify(state.solved)),
-      });
-      alert(`Saved quotes for ${todayKey()} to history.`);
-      renderHistoryList();
-    });
-
     document.getElementById('exportExcelBtn').addEventListener('click', () => {
       FXExcel.exportToExcel(state.solved.curve, todayKey());
     });
@@ -699,32 +493,6 @@
     });
 
     document.getElementById('applyPasteBtn').addEventListener('click', applyPasteAsRates);
-
-    document.getElementById('brokenDateInput').addEventListener('change', renderBrokenDate);
-
-    document.getElementById('runCompareBtn').addEventListener('click', runCompare);
-    document.getElementById('exportHistoryBtn').addEventListener('click', () => {
-      const blob = new Blob([FXStorage.exportHistoryJSON()], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'fx_premium_history.json'; a.click();
-      URL.revokeObjectURL(url);
-    });
-
-    document.getElementById('pairInput').addEventListener('input', (e) => {
-      state.pair = e.target.value;
-      scheduleSaveDraft();
-    });
-
-    document.getElementById('addHolidayBtn').addEventListener('click', () => {
-      const val = document.getElementById('customHolidayInput').value;
-      if (!val) return;
-      FXCalendar.addCustomHoliday(val);
-      recompute();
-      renderAllViews();
-      renderHolidayList();
-      alert(`Added ${val} as a bank holiday. Value dates recalculated.`);
-    });
   }
 
   /** Excel import: expects columns Tenor, Payer (or Bid), Receiver (or Offer) — applied straight into the Rate boxes. */
@@ -763,8 +531,6 @@
 
   function renderAllViews() {
     renderHeader();
-    renderLadder();
-    renderDateDetail();
     renderLadderTable();
     renderIntervalTable();
     renderDownstream();
@@ -779,7 +545,6 @@
 
     const settings = FXStorage.getSettings();
     applyTheme(settings.theme || 'dark');
-    document.getElementById('pairInput').value = state.pair;
     document.getElementById('bigFigureInput').value = state.bigFigure;
 
     wireStaticControls();
