@@ -417,15 +417,9 @@
       const ratePair = fmtRatePairParts(c.payerOutright, c.receiverOutright);
       const premPair = fmtPremiumPairParts(c.payerPremium, c.receiverPremium);
       tr.innerHTML = `
-        <td><span class="tenor-name">${c.label}</span></td>
-        <td class="mono val-muted">${fmtDateLabel(c.date)}</td>
-        <td class="mono val-muted">${c.daysFromSpot}</td>
+        <td><span class="tenor-name">${c.label}</span><span class="tenor-date">${fmtDateLabel(c.date)}</span></td>
         <td class="mono"><span class="val-bid">${ratePair[0]}</span>/<span class="val-offer">${ratePair[1]}</span></td>
         <td class="mono"><span class="val-bid">${premPair[0]}</span>/<span class="val-offer">${premPair[1]}</span></td>
-        <td class="mono val-muted">${fmtSigned(c.payerPremiumPerDay, 4)}</td>
-        <td class="mono val-muted">${fmtSigned(c.receiverPremiumPerDay, 4)}</td>
-        <td class="mono val-blue">${fmtSigned(c.payerAnnualized)}%</td>
-        <td class="mono val-blue">${fmtSigned(c.receiverAnnualized)}%</td>
       `;
       tbody.appendChild(tr);
     });
