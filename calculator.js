@@ -78,12 +78,13 @@ const FXCalculator = (function () {
    * couple of common Cash-based skips. Dealers can add any other
    * pair with the "custom interval" row in the UI.
    */
+  const FORWARD_TENORS = ['1W', '2W', '1M', '2M', '3M', '6M', '12M'];
+  const FORWARD_POINTS = ['spot', ...FORWARD_TENORS];
   const DEFAULT_INTERVALS = [
-    ['cash', 'tom'], ['tom', 'spot'], ['cash', 'spot'],
-    ['spot', '1W'], ['spot', '2W'], ['spot', '1M'], ['spot', '2M'],
-    ['spot', '3M'], ['spot', '6M'], ['spot', '12M'],
+    ['cash', 'tom'],
+    ...['cash', 'tom'].flatMap((near) => FORWARD_POINTS.map((f) => [near, f])),
+    ...FORWARD_TENORS.map((f) => ['spot', f]),
     ['1M', '2M'], ['2M', '3M'], ['3M', '6M'], ['6M', '12M'],
-    ['cash', '1M'], ['cash', '3M'],
   ];
 
   /**
