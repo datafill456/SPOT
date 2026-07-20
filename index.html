@@ -29,8 +29,10 @@
   <div class="card">
     <h2>Fast Entry <span class="hint">Rate on the left, premium (vs Spot) on the right — type shorthand, Tab down the column</span></h2>
     <div class="small-text" style="margin-bottom:10px;">
-      <strong style="color:var(--green);">Payer</strong> = Sell now / Buy forward (pays the premium) &nbsp;·&nbsp;
-      <strong style="color:var(--red);">Receiver</strong> = Buy now / Sell forward (receives the premium)
+      Rate = <strong>Bid / Offer</strong> &nbsp;·&nbsp;
+      Premium = <strong style="color:var(--green);">Payer</strong> (Sell now / Buy forward, pays the premium) /
+      <strong style="color:var(--red);">Receiver</strong> (Buy now / Sell forward, receives the premium) —
+      once both sides agree on one premium, the deal's rate is quoted as the Bid/Offer above.
     </div>
     <div id="solverStatus" class="solver-status">Set a Big Figure, then type Spot's rate — everything else can chain off it.</div>
 
@@ -44,7 +46,7 @@
         <thead>
           <tr>
             <th>Tenor</th>
-            <th>Rate <span class="hint">payer/receiver, e.g. 30/40</span></th>
+            <th>Rate <span class="hint">bid/offer, e.g. 30/40</span></th>
             <th>Premium vs Spot <span class="hint">payer/receiver, e.g. 5/5.5</span></th>
             <th>Per Day</th>
           </tr>
@@ -83,8 +85,8 @@
             <th>Tenor</th>
             <th>Value Date</th>
             <th>Days</th>
-            <th>Payer Outright <span class="hint">(Sell/Buy)</span></th>
-            <th>Receiver Outright <span class="hint">(Buy/Sell)</span></th>
+            <th>Bid Rate</th>
+            <th>Offer Rate</th>
             <th>Payer Prem. <span class="hint">(Sell/Buy)</span></th>
             <th>Receiver Prem. <span class="hint">(Buy/Sell)</span></th>
             <th>Payer/Day</th>
