@@ -169,6 +169,32 @@
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
   }
 
+  /** Strips trailing zeros for clean shorthand display: 20.00 -> "20", 5.50 -> "5.5". */
+  function fmtTrim(v, dp = 2) {
+    return parseFloat(v.toFixed(dp)).toString();
+  }
+
+  /** "336.20 / 336.40" -> ["20","40"] when both fall within the shared Big Figure's hundred, else full rate. */
+  function fmtRatePairParts(payer, receiver) {
+    const bf = parseFloat(state.bigFigure);
+    const hasBF = isFinite(bf);
+    const short = (v) => {
+      if (v === null) return '—';
+      if (hasBF) {
+        const points = (v - bf) * 100;
+        if (points >= 0 && points < 100) return fmtTrim(points);
+      }
+      return fmtNum(v);
+    };
+    return [short(payer), short(receiver)];
+  }
+
+  /** "+1.20 / +1.00" -> ["1.20","1.00"], literal (no big-figure scaling). */
+  function fmtPremiumPairParts(payer, receiver) {
+    const short = (v) => (v === null ? '—' : fmtTrim(v));
+    return [short(payer), short(receiver)];
+  }
+
   function renderHeader() {
     document.getElementById('tradeDateDisplay').textContent = fmtDateLabel(state.tradeDate);
   }
@@ -388,14 +414,14 @@
       const c = state.solved.curve[t];
       const tr = document.createElement('tr');
       if (t === 'spot') tr.classList.add('row-spot');
+      const ratePair = fmtRatePairParts(c.payerOutright, c.receiverOutright);
+      const premPair = fmtPremiumPairParts(c.payerPremium, c.receiverPremium);
       tr.innerHTML = `
         <td><span class="tenor-name">${c.label}</span></td>
         <td class="mono val-muted">${fmtDateLabel(c.date)}</td>
         <td class="mono val-muted">${c.daysFromSpot}</td>
-        <td class="mono val-bid">${fmtNum(c.payerOutright)}</td>
-        <td class="mono val-offer">${fmtNum(c.receiverOutright)}</td>
-        <td class="mono val-bid">${fmtSigned(c.payerPremium)}</td>
-        <td class="mono val-offer">${fmtSigned(c.receiverPremium)}</td>
+        <td class="mono"><span class="val-bid">${ratePair[0]}</span>/<span class="val-offer">${ratePair[1]}</span></td>
+        <td class="mono"><span class="val-bid">${premPair[0]}</span>/<span class="val-offer">${premPair[1]}</span></td>
         <td class="mono val-muted">${fmtSigned(c.payerPremiumPerDay, 4)}</td>
         <td class="mono val-muted">${fmtSigned(c.receiverPremiumPerDay, 4)}</td>
         <td class="mono val-blue">${fmtSigned(c.payerAnnualized)}%</td>
