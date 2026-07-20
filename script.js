@@ -65,15 +65,33 @@
     if (!str || !str.trim()) return empty;
     const bf = parseFloat(bigFigureStr);
     const hasBF = isFinite(bf);
-    const resolve = (p) => {
+
+    const resolveSingle = (p) => {
       const v = parseFloat(p);
       if (!isFinite(v)) return null;
       if (hasBF && Math.abs(v) < 100) return bf + v / 100;
       return v;
     };
+
     const parts = str.split('/').map((s) => s.trim());
-    if (parts.length === 1) { const v = resolve(parts[0]); return { bid: v, offer: v }; }
-    return { bid: resolve(parts[0]), offer: resolve(parts[1]) };
+    if (parts.length === 1) { const v = resolveSingle(parts[0]); return { bid: v, offer: v }; }
+
+    const bidRaw = parseFloat(parts[0]);
+    const offerRaw = parseFloat(parts[1]);
+    if (!isFinite(bidRaw) || !isFinite(offerRaw)) {
+      return { bid: resolveSingle(parts[0]), offer: resolveSingle(parts[1]) };
+    }
+
+    if (hasBF && Math.abs(bidRaw) < 100 && Math.abs(offerRaw) < 100) {
+      // Big-figure rollover: if the offer's points are numerically smaller
+      // than the bid's, the offer has crossed into the next hundred,
+      // e.g. Big Figure 336, "30/10" -> 336.30 / 337.10 (not 336.10).
+      const bid = bf + bidRaw / 100;
+      const offerBigFigure = offerRaw < bidRaw ? bf + 1 : bf;
+      const offer = offerBigFigure + offerRaw / 100;
+      return { bid, offer };
+    }
+    return { bid: bidRaw, offer: offerRaw };
   }
 
   /** "5/5.5" -> {payer:5, receiver:5.5}, literal (no big-figure scaling). Single value applies to both sides. */
@@ -91,7 +109,7 @@
     if (val === null) return null;
     const isNear = NEAR_DATES.includes(t);
     const perDay = isNear && state.rows[t].perDay;
-    const scaled = perDay ? val / 100 : val;
+    const scaled = val / 100; // premium is always points, e.g. 5 -> 0.05
     const mult = perDay ? Math.abs(days[t]) : 1;
     const sign = isNear ? -1 : 1;
     return sign * scaled * mult;
