@@ -59,9 +59,9 @@
 
   /* ---------------- Shorthand parsing ---------------- */
 
-  /** "30/40" + bigFigure "336" -> {payer:336.30, receiver:336.40}. Single value applies to both sides. "336.30/336.40" (no big figure) works too. */
+  /** "30/40" + bigFigure "336" -> {bid:336.30, offer:336.40}. Single value applies to both sides. "336.30/336.40" (no big figure) works too. */
   function parseRateShorthand(str, bigFigureStr) {
-    const empty = { payer: null, receiver: null };
+    const empty = { bid: null, offer: null };
     if (!str || !str.trim()) return empty;
     const bf = parseFloat(bigFigureStr);
     const hasBF = isFinite(bf);
@@ -72,8 +72,8 @@
       return v;
     };
     const parts = str.split('/').map((s) => s.trim());
-    if (parts.length === 1) { const v = resolve(parts[0]); return { payer: v, receiver: v }; }
-    return { payer: resolve(parts[0]), receiver: resolve(parts[1]) };
+    if (parts.length === 1) { const v = resolve(parts[0]); return { bid: v, offer: v }; }
+    return { bid: resolve(parts[0]), offer: resolve(parts[1]) };
   }
 
   /** "5/5.5" -> {payer:5, receiver:5.5}, literal (no big-figure scaling). Single value applies to both sides. */
@@ -109,8 +109,8 @@
       const row = state.rows[t];
 
       const rate = parseRateShorthand(row.rate, state.bigFigure);
-      if (rate.payer !== null || rate.receiver !== null) {
-        anchors.push({ node: t, payer: rate.payer, receiver: rate.receiver });
+      if (rate.bid !== null || rate.offer !== null) {
+        anchors.push({ node: t, bid: rate.bid, offer: rate.offer });
       }
 
       if (t !== 'spot') {
@@ -156,6 +156,8 @@
   }
 
   /* ---------------- Formatting helpers ---------------- */
+  function isNum(v) { return typeof v === 'number' && !Number.isNaN(v); }
+
   function fmtNum(v, dp = 2) {
     if (typeof v !== 'number' || Number.isNaN(v)) return '—';
     return v.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -174,8 +176,8 @@
     return parseFloat(v.toFixed(dp)).toString();
   }
 
-  /** "336.20 / 336.40" -> ["20","40"] when both fall within the shared Big Figure's hundred, else full rate. */
-  function fmtRatePairParts(payer, receiver) {
+  /** [bid, offer] -> ["20","40"] shorthand within the shared Big Figure's hundred, else full rate. */
+  function fmtRatePairParts(bid, offer) {
     const bf = parseFloat(state.bigFigure);
     const hasBF = isFinite(bf);
     const short = (v) => {
@@ -186,13 +188,7 @@
       }
       return fmtNum(v);
     };
-    return [short(payer), short(receiver)];
-  }
-
-  /** "+1.20 / +1.00" -> ["1.20","1.00"], literal (no big-figure scaling). */
-  function fmtPremiumPairParts(payer, receiver) {
-    const short = (v) => (v === null ? '—' : fmtTrim(v));
-    return [short(payer), short(receiver)];
+    return [short(bid), short(offer)];
   }
 
   function renderHeader() {
@@ -271,8 +267,9 @@
 
       const rateInput = document.querySelector(`#ladderTableBody input[data-tenor="${t}"][data-kind="rate"]`);
       if (rateInput && document.activeElement !== rateInput) {
-        if (!row.rate.trim() && (c.payerOutright !== null || c.receiverOutright !== null)) {
-          rateInput.value = `${fmtNum(c.payerOutright)} / ${fmtNum(c.receiverOutright)}`;
+        const dealAgreed = isNum(c.payerPremium) && isNum(c.receiverPremium) && Math.abs(c.payerPremium - c.receiverPremium) < 1e-9;
+        if (!row.rate.trim() && dealAgreed && (c.payerBid !== null || c.payerOffer !== null)) {
+          rateInput.value = `${fmtNum(c.payerBid)} / ${fmtNum(c.payerOffer)}`;
           rateInput.classList.add('auto-filled');
         } else if (!row.rate.trim()) {
           rateInput.value = '';
@@ -390,10 +387,11 @@
      ================================================================== */
   function renderSolverStatus() {
     const el = document.getElementById('solverStatus');
-    const { payerSpot, receiverSpot } = state.solved;
+    const { payerSpotBid, payerSpotOffer, receiverSpotBid, receiverSpotOffer } = state.solved;
+    const anySpot = payerSpotBid !== null || payerSpotOffer !== null || receiverSpotBid !== null || receiverSpotOffer !== null;
     const connectedCount = TENORS.filter((t) => state.solved.curve[t].payerPremium !== null || state.solved.curve[t].receiverPremium !== null).length;
 
-    if (payerSpot === null && receiverSpot === null) {
+    if (!anySpot) {
       el.className = 'solver-status warn';
       el.textContent = connectedCount > 1
         ? `${connectedCount} tenors linked by points, but no anchor yet — type Spot's Rate to see actual levels.`
@@ -401,7 +399,7 @@
       return;
     }
     el.className = 'solver-status ok';
-    el.textContent = `Spot solved: Payer ${fmtNum(payerSpot)} / Receiver ${fmtNum(receiverSpot)} · ${connectedCount} of ${TENORS.length} tenors linked`;
+    el.textContent = `Spot solved — Payer ${fmtNum(payerSpotBid)}/${fmtNum(payerSpotOffer)} · Receiver ${fmtNum(receiverSpotBid)}/${fmtNum(receiverSpotOffer)} · ${connectedCount} of ${TENORS.length} tenors linked`;
   }
 
   /* ==================================================================
@@ -414,12 +412,12 @@
       const c = state.solved.curve[t];
       const tr = document.createElement('tr');
       if (t === 'spot') tr.classList.add('row-spot');
-      const ratePair = fmtRatePairParts(c.payerOutright, c.receiverOutright);
-      const premPair = fmtPremiumPairParts(c.payerPremium, c.receiverPremium);
+      const payerPair = fmtRatePairParts(c.payerBid, c.payerOffer);
+      const receiverPair = fmtRatePairParts(c.receiverBid, c.receiverOffer);
       tr.innerHTML = `
         <td><span class="tenor-name">${c.label}</span><span class="tenor-date">${fmtDateLabel(c.date)}</span></td>
-        <td class="mono"><span class="val-bid">${ratePair[0]}</span>/<span class="val-offer">${ratePair[1]}</span></td>
-        <td class="mono"><span class="val-bid">${premPair[0]}</span>/<span class="val-offer">${premPair[1]}</span></td>
+        <td class="mono"><span class="val-bid">${payerPair[0]}</span>/<span class="val-offer">${payerPair[1]}</span></td>
+        <td class="mono"><span class="val-bid">${receiverPair[0]}</span>/<span class="val-offer">${receiverPair[1]}</span></td>
       `;
       tbody.appendChild(tr);
     });
@@ -507,8 +505,10 @@
       FXExcel.generatePDFReport(state.solved.curve, {
         pair: state.pair,
         tradeDateLabel: fmtDateLabel(state.tradeDate),
-        spotBid: fmtNum(state.solved.payerSpot),
-        spotOffer: fmtNum(state.solved.receiverSpot),
+        payerSpotBid: fmtNum(state.solved.payerSpotBid),
+        payerSpotOffer: fmtNum(state.solved.payerSpotOffer),
+        receiverSpotBid: fmtNum(state.solved.receiverSpotBid),
+        receiverSpotOffer: fmtNum(state.solved.receiverSpotOffer),
       });
     });
 
