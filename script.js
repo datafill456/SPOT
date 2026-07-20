@@ -149,6 +149,12 @@
   }
 
   /* ---------------- Draft persistence ---------------- */
+  function makeDefaultCustomEdges() {
+    return FXCalculator.DEFAULT_INTERVALS.map(([from, to]) => ({
+      id: nextEdgeId++, from, to, payer: null, receiver: null,
+    }));
+  }
+
   function loadDraft() {
     const draft = FXStorage.loadDraft();
     if (draft && draft.tradeDateKey === todayKey() && draft.rows) {
@@ -158,7 +164,7 @@
       nextEdgeId = Math.max(1, ...state.customEdges.map((e) => e.id + 1), 1);
     } else {
       state.rows = makeDefaultRows();
-      state.customEdges = [];
+      state.customEdges = makeDefaultCustomEdges();
     }
   }
 
