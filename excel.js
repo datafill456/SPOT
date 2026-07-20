@@ -1,118 +1,164 @@
 /* ============================================================
-   chart.js
-   Thin wrapper around Chart.js (loaded from CDN in index.html) for
-   the four chart views: Forward Curve, Premium Per Day, Annualized
-   Premium, and Premium History across saved days.
+   excel.js
+   Import/Export to Excel (via SheetJS, loaded from CDN in index.html),
+   copy the dealer table to the clipboard, paste dealer quotes back in,
+   and generate a printable PDF report (uses the browser's native
+   print-to-PDF, so no heavy PDF library / backend is required).
    ============================================================ */
 
-const FXCharts = (function () {
-  const instances = {};
+const FXExcel = (function () {
+  const TENOR_ORDER = FXCalculator.TENOR_ORDER;
 
-  function destroy(id) {
-    if (instances[id]) {
-      instances[id].destroy();
-      delete instances[id];
+  function curveToRows(curve) {
+    return TENOR_ORDER.map((t) => {
+      const c = curve[t];
+      return {
+        Tenor: c.label,
+        'Value Date': FXCalendar.fmt(c.date),
+        'Days from Spot': c.daysFromSpot,
+        'Bid Rate': roundOrBlank(c.payerOutright),
+        'Offer Rate': roundOrBlank(c.receiverOutright),
+        'Payer Premium (Sell/Buy)': roundOrBlank(c.payerPremium),
+        'Receiver Premium (Buy/Sell)': roundOrBlank(c.receiverPremium),
+        'Premium Spread': roundOrBlank(c.spreadPremium),
+        'Payer Premium/Day': roundOrBlank(c.payerPremiumPerDay, 4),
+        'Receiver Premium/Day': roundOrBlank(c.receiverPremiumPerDay, 4),
+        'Payer Annualized %': roundOrBlank(c.payerAnnualized),
+        'Receiver Annualized %': roundOrBlank(c.receiverAnnualized),
+      };
+    });
+  }
+
+  function roundOrBlank(v, dp = 4) {
+    return typeof v === 'number' && !Number.isNaN(v) ? Number(v.toFixed(dp)) : '';
+  }
+
+  function exportToExcel(curve, tradeDateLabel) {
+    if (typeof XLSX === 'undefined') {
+      alert('Excel library did not load. Check your internet connection.');
+      return;
     }
+    const rows = curveToRows(curve);
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Premium Curve');
+    XLSX.writeFile(wb, `FX_Premium_Curve_${tradeDateLabel}.xlsx`);
   }
 
-  function baseOptions(yLabel) {
-    return {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { labels: { color: '#c7d0da' } },
-        tooltip: { mode: 'index', intersect: false },
-      },
-      scales: {
-        x: { ticks: { color: '#8a94a3' }, grid: { color: '#232a35' } },
-        y: {
-          ticks: { color: '#8a94a3' },
-          grid: { color: '#232a35' },
-          title: { display: !!yLabel, text: yLabel, color: '#8a94a3' },
-        },
-      },
+  function exportToCSV(curve, tradeDateLabel) {
+    const rows = curveToRows(curve);
+    const headers = Object.keys(rows[0]);
+    const lines = [headers.join(',')];
+    rows.forEach((r) => {
+      lines.push(headers.map((h) => r[h]).join(','));
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `FX_Premium_Curve_${tradeDateLabel}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /** Import an Excel workbook of quotes: expects columns Tenor,Bid,Offer (outright or premium). */
+  function importFromExcel(file, callback) {
+    if (typeof XLSX === 'undefined') {
+      alert('Excel library did not load. Check your internet connection.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+      callback(rows);
     };
+    reader.readAsArrayBuffer(file);
   }
 
-  function renderForwardCurve(canvasId, curve) {
-    destroy(canvasId);
-    const tenors = FXCalculator.TENOR_ORDER;
-    const labels = tenors.map((t) => curve[t].label);
-    const bid = tenors.map((t) => curve[t].payerOutright);
-    const offer = tenors.map((t) => curve[t].receiverOutright);
+  function copyTableToClipboard(curve) {
+    const rows = curveToRows(curve);
+    const headers = Object.keys(rows[0]);
+    const lines = [headers.join('\t')];
+    rows.forEach((r) => lines.push(headers.map((h) => r[h]).join('\t')));
+    const text = lines.join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => true,
+      () => false
+    );
+    return text;
+  }
 
-    instances[canvasId] = new Chart(document.getElementById(canvasId), {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Payer Outright', data: bid, borderColor: '#2ecc71', backgroundColor: 'transparent', tension: 0.25 },
-          { label: 'Receiver Outright', data: offer, borderColor: '#ff5252', backgroundColor: 'transparent', tension: 0.25 },
-        ],
-      },
-      options: baseOptions('Rate'),
+  /**
+   * Parse pasted dealer-quote text (tab or comma separated) of the
+   * form: Tenor <tab> Bid <tab> Offer, one per line. Returns an array
+   * of {tenorKey, bid, offer} guesses matched against known tenor labels.
+   */
+  function parsePastedQuotes(text) {
+    const labelToKey = {};
+    FXCalculator.TENOR_ORDER.forEach((k) => {
+      labelToKey[FXCalculator.TENOR_LABELS[k].toLowerCase()] = k;
+      labelToKey[k.toLowerCase()] = k;
     });
-  }
 
-  function renderPremiumPerDay(canvasId, curve) {
-    destroy(canvasId);
-    const tenors = FXCalculator.TENOR_ORDER.filter((t) => t !== 'spot');
-    const labels = tenors.map((t) => curve[t].label);
-    const bid = tenors.map((t) => curve[t].payerPremiumPerDay);
-    const offer = tenors.map((t) => curve[t].receiverPremiumPerDay);
-
-    instances[canvasId] = new Chart(document.getElementById(canvasId), {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Payer Premium / Day', data: bid, backgroundColor: '#2ecc71' },
-          { label: 'Receiver Premium / Day', data: offer, backgroundColor: '#ff5252' },
-        ],
-      },
-      options: baseOptions('Points per day'),
+    const lines = text.split(/\r?\n/).filter((l) => l.trim().length);
+    const results = [];
+    lines.forEach((line) => {
+      const parts = line.split(/\t|,/).map((p) => p.trim());
+      if (parts.length < 2) return;
+      const tenorRaw = parts[0].toLowerCase();
+      const key = labelToKey[tenorRaw];
+      if (!key) return;
+      const bid = parseFloat(parts[1]);
+      const offer = parts.length > 2 ? parseFloat(parts[2]) : null;
+      results.push({ tenorKey: key, bid: isFinite(bid) ? bid : null, offer: isFinite(offer) ? offer : null });
     });
+    return results;
   }
 
-  function renderAnnualized(canvasId, curve) {
-    destroy(canvasId);
-    const tenors = FXCalculator.TENOR_ORDER.filter((t) => t !== 'spot');
-    const labels = tenors.map((t) => curve[t].label);
-    const bid = tenors.map((t) => curve[t].payerAnnualized);
-    const offer = tenors.map((t) => curve[t].receiverAnnualized);
-
-    instances[canvasId] = new Chart(document.getElementById(canvasId), {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'Payer Annualized %', data: bid, borderColor: '#4da3ff', backgroundColor: 'transparent', tension: 0.25 },
-          { label: 'Receiver Annualized %', data: offer, borderColor: '#f5a623', backgroundColor: 'transparent', tension: 0.25 },
-        ],
-      },
-      options: baseOptions('% p.a.'),
-    });
+  /** Build a printable report window and trigger the browser's Save-as-PDF print dialog. */
+  function generatePDFReport(curve, meta) {
+    const rows = curveToRows(curve);
+    const win = window.open('', '_blank');
+    const style = `
+      body{font-family:Arial,Helvetica,sans-serif;padding:24px;color:#111;}
+      h1{font-size:18px;margin-bottom:0;}
+      .sub{color:#555;margin-top:4px;margin-bottom:20px;font-size:12px;}
+      table{border-collapse:collapse;width:100%;font-size:11px;}
+      th,td{border:1px solid #ccc;padding:6px 8px;text-align:right;}
+      th{background:#eee;text-align:center;}
+      td:first-child, th:first-child{text-align:left;}
+    `;
+    const headers = Object.keys(rows[0]);
+    const tableRows = rows
+      .map((r) => `<tr>${headers.map((h) => `<td>${r[h]}</td>`).join('')}</tr>`)
+      .join('');
+    win.document.write(`
+      <html><head><title>FX Premium Report</title><style>${style}</style></head>
+      <body>
+        <h1>MVS Money Brokers — FX Premium Curve Report</h1>
+        <div class="sub">Currency Pair: ${meta.pair || 'USD/LKR'} &nbsp;|&nbsp; Trade Date: ${meta.tradeDateLabel} &nbsp;|&nbsp; Spot Bid/Offer: ${meta.spotBid ?? '-'} / ${meta.spotOffer ?? '-'}</div>
+        <div class="sub">Rates shown as Bid/Offer &nbsp;·&nbsp; Premiums shown as Payer (Sell/Buy, pays premium) / Receiver (Buy/Sell, receives premium)</div>
+        <table>
+          <thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </body></html>
+    `);
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 300);
   }
 
-  function renderHistory(canvasId, historySnapshots, tenorKey) {
-    destroy(canvasId);
-    const dates = Object.keys(historySnapshots).sort();
-    const bid = dates.map((d) => historySnapshots[d]?.curve?.[tenorKey]?.payerPremium ?? null);
-    const offer = dates.map((d) => historySnapshots[d]?.curve?.[tenorKey]?.receiverPremium ?? null);
-
-    instances[canvasId] = new Chart(document.getElementById(canvasId), {
-      type: 'line',
-      data: {
-        labels: dates,
-        datasets: [
-          { label: `${tenorKey} Payer Premium`, data: bid, borderColor: '#2ecc71', backgroundColor: 'transparent', tension: 0.2 },
-          { label: `${tenorKey} Receiver Premium`, data: offer, borderColor: '#ff5252', backgroundColor: 'transparent', tension: 0.2 },
-        ],
-      },
-      options: baseOptions('Premium'),
-    });
-  }
-
-  return { renderForwardCurve, renderPremiumPerDay, renderAnnualized, renderHistory, destroy };
+  return {
+    exportToExcel,
+    exportToCSV,
+    importFromExcel,
+    copyTableToClipboard,
+    parsePastedQuotes,
+    generatePDFReport,
+    curveToRows,
+  };
 })();
