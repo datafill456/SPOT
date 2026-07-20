@@ -16,15 +16,14 @@ const FXExcel = (function () {
         Tenor: c.label,
         'Value Date': FXCalendar.fmt(c.date),
         'Days from Spot': c.daysFromSpot,
-        'Bid Rate': roundOrBlank(c.payerOutright),
-        'Offer Rate': roundOrBlank(c.receiverOutright),
+        'Payer Rate Bid': roundOrBlank(c.payerBid),
+        'Payer Rate Offer': roundOrBlank(c.payerOffer),
+        'Receiver Rate Bid': roundOrBlank(c.receiverBid),
+        'Receiver Rate Offer': roundOrBlank(c.receiverOffer),
         'Payer Premium (Sell/Buy)': roundOrBlank(c.payerPremium),
         'Receiver Premium (Buy/Sell)': roundOrBlank(c.receiverPremium),
-        'Premium Spread': roundOrBlank(c.spreadPremium),
         'Payer Premium/Day': roundOrBlank(c.payerPremiumPerDay, 4),
         'Receiver Premium/Day': roundOrBlank(c.receiverPremiumPerDay, 4),
-        'Payer Annualized %': roundOrBlank(c.payerAnnualized),
-        'Receiver Annualized %': roundOrBlank(c.receiverAnnualized),
       };
     });
   }
@@ -139,7 +138,8 @@ const FXExcel = (function () {
       <html><head><title>FX Premium Report</title><style>${style}</style></head>
       <body>
         <h1>MVS Money Brokers — FX Premium Curve Report</h1>
-        <div class="sub">Currency Pair: ${meta.pair || 'USD/LKR'} &nbsp;|&nbsp; Trade Date: ${meta.tradeDateLabel} &nbsp;|&nbsp; Spot Bid/Offer: ${meta.spotBid ?? '-'} / ${meta.spotOffer ?? '-'}</div>
+        <div class="sub">Currency Pair: ${meta.pair || 'USD/LKR'} &nbsp;|&nbsp; Trade Date: ${meta.tradeDateLabel}</div>
+        <div class="sub">Spot — Payer ${meta.payerSpotBid ?? '-'} / ${meta.payerSpotOffer ?? '-'} &nbsp;|&nbsp; Receiver ${meta.receiverSpotBid ?? '-'} / ${meta.receiverSpotOffer ?? '-'}</div>
         <div class="sub">Rates shown as Bid/Offer &nbsp;·&nbsp; Premiums shown as Payer (Sell/Buy, pays premium) / Receiver (Buy/Sell, receives premium)</div>
         <table>
           <thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
