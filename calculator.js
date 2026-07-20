@@ -157,48 +157,62 @@ const FXCalculator = (function () {
 
   /**
    * Full market solve.
-   * edges:   [{ from, to, payer: number|null, receiver: number|null }]
-   * anchors: [{ node, payer: number|null, receiver: number|null }]
+   * edges:   [{ from, to, payer: number|null, receiver: number|null }]  premium points, from -> to
+   * anchors: [{ node, bid: number|null, offer: number|null }]           a real traded Bid/Offer rate
+   *
+   * Each premium (Payer, Receiver) is a flat shift applied to BOTH the
+   * Bid and the Offer side of whatever rate anchor is available, e.g.
+   * Spot 20/30, Cash-Spot Payer premium 5 -> Payer Rate = (20-5·days)/(30-5·days).
+   * Receiver premium 5.5 -> Receiver Rate = (20-5.5·days)/(30-5.5·days).
+   * So every tenor gets FOUR numbers: payerBid, payerOffer, receiverBid,
+   * receiverOffer — the same relative premium chain, anchored twice.
    */
   function solveMarket(edges, anchors, valueDates) {
     const days = valueDates.days;
 
     const payerEdges = edges.map((e) => ({ from: e.from, to: e.to, value: e.payer }));
     const receiverEdges = edges.map((e) => ({ from: e.from, to: e.to, value: e.receiver }));
-    const payerAnchors = anchors.map((a) => ({ node: a.node, value: a.payer }));
-    const receiverAnchors = anchors.map((a) => ({ node: a.node, value: a.receiver }));
+    const bidAnchors = anchors.map((a) => ({ node: a.node, value: a.bid }));
+    const offerAnchors = anchors.map((a) => ({ node: a.node, value: a.offer }));
 
-    const payerSolve = solveSideGraph(payerEdges, payerAnchors);
-    const receiverSolve = solveSideGraph(receiverEdges, receiverAnchors);
+    const payerBidSolve = solveSideGraph(payerEdges, bidAnchors);
+    const payerOfferSolve = solveSideGraph(payerEdges, offerAnchors);
+    const receiverBidSolve = solveSideGraph(receiverEdges, bidAnchors);
+    const receiverOfferSolve = solveSideGraph(receiverEdges, offerAnchors);
 
     const curve = {};
     TENOR_ORDER.forEach((t) => {
       const d = days[t];
-      const payerPremium = payerSolve.relFromSpot[t];
-      const receiverPremium = receiverSolve.relFromSpot[t];
-      const payerOutright = payerSolve.absolute[t];
-      const receiverOutright = receiverSolve.absolute[t];
+      const payerPremium = payerBidSolve.relFromSpot[t];
+      const receiverPremium = receiverBidSolve.relFromSpot[t];
+
+      const payerBid = payerBidSolve.absolute[t];
+      const payerOffer = payerOfferSolve.absolute[t];
+      const receiverBid = receiverBidSolve.absolute[t];
+      const receiverOffer = receiverOfferSolve.absolute[t];
 
       curve[t] = {
         label: TENOR_LABELS[t],
         date: valueDates.dates[t],
         daysFromSpot: d,
-        payerOutright,
-        receiverOutright,
+        payerBid,
+        payerOffer,
+        receiverBid,
+        receiverOffer,
         payerPremium,
         receiverPremium,
-        spreadOutright: numOrNull(payerOutright, receiverOutright, (a, c) => a - c),
-        spreadPremium: numOrNull(payerPremium, receiverPremium, (a, c) => a - c),
+        payerSpread: numOrNull(payerOffer, payerBid, (a, c) => a - c),
+        receiverSpread: numOrNull(receiverOffer, receiverBid, (a, c) => a - c),
         payerPremiumPerDay: d !== 0 && isNum(payerPremium) ? payerPremium / d : (d === 0 ? 0 : null),
         receiverPremiumPerDay: d !== 0 && isNum(receiverPremium) ? receiverPremium / d : (d === 0 ? 0 : null),
-        payerAnnualized: annualize(payerPremium, payerSolve.absolute.spot, d),
-        receiverAnnualized: annualize(receiverPremium, receiverSolve.absolute.spot, d),
       };
     });
 
     return {
-      payerSpot: payerSolve.absolute.spot,
-      receiverSpot: receiverSolve.absolute.spot,
+      payerSpotBid: payerBidSolve.absolute.spot,
+      payerSpotOffer: payerOfferSolve.absolute.spot,
+      receiverSpotBid: receiverBidSolve.absolute.spot,
+      receiverSpotOffer: receiverOfferSolve.absolute.spot,
       curve,
     };
   }
