@@ -27,57 +27,52 @@
 <section class="view active" id="view-dealer">
 
   <div class="card">
-    <h2>Fast Entry <span class="hint">Rate on the left, premium (vs Spot) on the right — type shorthand, Tab down the column</span></h2>
+    <h2>Setup</h2>
     <div class="small-text" style="margin-bottom:10px;">
       Rate = <strong>Bid / Offer</strong> &nbsp;·&nbsp;
       Premium = <strong style="color:var(--green);">Payer</strong> (Sell now / Buy forward, pays the premium) /
-      <strong style="color:var(--red);">Receiver</strong> (Buy now / Sell forward, receives the premium) —
-      once both sides agree on one premium, the deal's rate is quoted as the Bid/Offer above.
+      <strong style="color:var(--red);">Receiver</strong> (Buy now / Sell forward, receives the premium)
     </div>
-    <div id="solverStatus" class="solver-status">Set a Big Figure, then type Spot's rate — everything else can chain off it.</div>
-
-    <div style="margin-bottom:14px;">
-      <label class="field-label">Big Figure <span class="small-text">(shared whole-number part, e.g. 336 — leave blank to type full rates)</span></label>
-      <input type="text" id="bigFigureInput" class="cell-input" style="width:100px;" placeholder="336">
-    </div>
-
-    <div style="overflow-x:auto;">
-      <table class="dealer" id="ladderTable">
-        <thead>
-          <tr>
-            <th>Tenor</th>
-            <th>Rate <span class="hint">bid/offer, e.g. 30/40</span></th>
-            <th>Premium vs Spot <span class="hint">payer/receiver, e.g. 5/5.5</span></th>
-            <th>Per Day</th>
-          </tr>
-        </thead>
-        <tbody id="ladderTableBody"></tbody>
-      </table>
-    </div>
-
-    <div class="btn-row" style="margin-top:14px;">
-      <button class="btn" id="clearInputsBtn">Clear All Inputs</button>
-    </div>
-
-    <details style="margin-top:16px;">
-      <summary style="cursor:pointer;color:var(--text-muted);font-size:12px;">Advanced: extra intervals (e.g. 1M–2M forward-forward)</summary>
-      <div style="overflow-x:auto;margin-top:10px;">
-        <table class="dealer" id="intervalTable">
-          <thead><tr><th>Interval</th><th>Payer Points</th><th>Receiver Points</th><th></th></tr></thead>
-          <tbody id="intervalTableBody"></tbody>
-        </table>
-      </div>
-      <div class="btn-row" style="margin-top:10px;">
-        <select id="customFrom" class="cell-input" style="width:110px;"></select>
-        <span class="small-text">to</span>
-        <select id="customTo" class="cell-input" style="width:110px;"></select>
-        <button class="btn" id="addCustomIntervalBtn">Add Custom Interval</button>
-      </div>
-    </details>
+    <div id="solverStatus" class="solver-status">Add a Rate for at least one value date, then a Premium between any two, and the rest chains off it.</div>
+    <label class="field-label">Big Figure <span class="small-text">(shared whole-number part, e.g. 336 — leave blank to type full rates)</span></label>
+    <input type="text" id="bigFigureInput" class="cell-input" style="width:100px;" placeholder="336">
   </div>
 
   <div class="card">
-    <h2>Dealer Quote Screen <span class="hint">Live · read-only · large-format board</span></h2>
+    <h2>Rate Entries <span class="hint">Tenor + Bid/Offer — add as many as you know</span></h2>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="rateTable">
+        <thead><tr><th>Tenor</th><th>Rate <span class="hint">Bid/Offer, e.g. 30/40</span></th><th></th></tr></thead>
+        <tbody id="rateTableBody"></tbody>
+      </table>
+    </div>
+    <div class="btn-row" style="margin-top:10px;">
+      <select id="newRateNode" class="cell-input" style="width:120px;"></select>
+      <button class="btn" id="addRateBtn">Add Rate</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Premium Entries <span class="hint">Tenor 1 → Tenor 2 + Payer/Receiver premium between them</span></h2>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="premiumTable">
+        <thead><tr><th>Tenor 1</th><th>Tenor 2</th><th>Premium <span class="hint">Payer/Receiver, e.g. 5/5.5</span></th><th>Per Day</th><th></th></tr></thead>
+        <tbody id="premiumTableBody"></tbody>
+      </table>
+    </div>
+    <div class="btn-row" style="margin-top:10px;">
+      <select id="newPremiumFrom" class="cell-input" style="width:120px;"></select>
+      <span class="small-text">→</span>
+      <select id="newPremiumTo" class="cell-input" style="width:120px;"></select>
+      <button class="btn" id="addPremiumBtn">Add Premium</button>
+    </div>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn" id="clearInputsBtn">Clear All Inputs</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Dealer Quote Screen <span class="hint">Live · read-only · auto-calculated from premiums where no direct rate is given</span></h2>
     <div style="overflow-x:auto;">
       <table class="dealer" id="quoteScreenTable">
         <thead>
@@ -88,6 +83,16 @@
           </tr>
         </thead>
         <tbody id="quoteScreenBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" id="impliedCard" style="display:none;">
+    <h2>Implied Premiums <span class="hint">Recognized automatically from 2+ directly-entered rates</span></h2>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="impliedTable">
+        <thead><tr><th>Tenor 1 → Tenor 2</th><th>Payer Premium</th><th>Receiver Premium</th></tr></thead>
+        <tbody id="impliedTableBody"></tbody>
       </table>
     </div>
   </div>
@@ -103,10 +108,10 @@
       <button class="btn primary" id="generatePdfBtn">Generate PDF Report</button>
     </div>
     <div style="margin-top:14px;">
-      <label class="field-label">Paste Dealer Quotes (Tenor&#9;Payer&#9;Receiver per line — sets the Rate boxes)</label>
+      <label class="field-label">Paste Dealer Quotes (Tenor&#9;Bid&#9;Offer per line — adds/updates Rate Entries)</label>
       <textarea class="paste-box" id="pasteBox" placeholder="Spot	336.20	336.40
 1M	337.00	337.60"></textarea>
-      <div class="btn-row"><button class="btn" id="applyPasteBtn">Apply Pasted Quotes to Rates</button></div>
+      <div class="btn-row"><button class="btn" id="applyPasteBtn">Apply Pasted Quotes to Rate Entries</button></div>
     </div>
   </div>
 
