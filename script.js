@@ -1,31 +1,33 @@
 /* ============================================================
    script.js
    Wires calendar.js / calculator.js / storage.js / excel.js
-   together for the single Dealer Quotes screen: Fast Entry ladder,
-   the read-only Dealer Quote Screen board, and Excel/PDF reports.
+   together for the Dealer Quotes screen.
 
-   FAST ENTRY MODEL
-   -----------------
-   One row per standard tenor. Two shorthand boxes per row:
-     - Rate      "30/40"  -> Big Figure + points -> payer/receiver outright
-     - Premium   "5/5.5"  -> points vs Spot -> payer/receiver premium
-   Cash & Tom carry a "Per Day" toggle: their premium is quoted PER DAY
-   and gets multiplied by the actual number of calendar days to Spot,
-   then SUBTRACTED from Spot (near dates trade at a discount you
-   subtract), e.g.:
-     Spot 336.20/336.40, Cash premium 5/5.5 per day, 4 days to Spot
-     -> Cash = 336.20 - 0.05*4 = 336.00 (payer), 336.40 - 0.055*4 = 336.18 (receiver)
-   Forward tenors (1W...12M) add the premium to Spot directly, as
-   typed (no day multiplication, no /100 scaling).
+   INPUT MODEL — two fully flexible, addable/removable lists:
+     - Rate Entries:    { node, rate }         a plain Bid/Offer rate
+                                                for one value date
+     - Premium Entries: { from, to, premium,   Payer/Receiver points
+                          perDay }             between any two dates
 
-   Every row's Rate feeds the solver as an ANCHOR; every row's
-   Premium feeds it as an EDGE from Spot to that tenor. The solver
-   (calculator.js) is a general interval graph, so the "Advanced"
-   panel can add arbitrary extra intervals (e.g. 1M-2M) on top.
+   Every Rate Entry feeds the solver as an ANCHOR (bid + offer).
+   Every Premium Entry feeds it as an EDGE (Payer points + Receiver
+   points) between the two chosen dates, always applied going
+   chronologically forward: rate(later) = rate(earlier) + premium.
+   This is why Cash naturally comes out as a discount to Spot without
+   any special-casing — Cash is simply earlier, so solving backward
+   from Spot subtracts the same premium that was added going forward.
+
+   "Per Day" (available on any Premium Entry) treats the typed number
+   as points-per-day, multiplied by the actual calendar days between
+   the two chosen dates, before being added going forward in time.
+
+   IMPLIED PREMIUMS: whenever 2+ Rate Entries exist, the Payer/Receiver
+   premium between every pair is recognized automatically (Payer from
+   the Bid sides, Receiver from the Offer sides) and shown read-only.
 
    PAYER / RECEIVER = Sell-now/Buy-forward vs Buy-now/Sell-forward
    (standard FX swap terminology) — Payer pays the premium, Receiver
-   receives it.
+   receives it. Rate = plain Bid/Offer, not tied to Payer/Receiver.
    ============================================================ */
 
 (function () {
@@ -37,29 +39,26 @@
     tradeDate: new Date(),
     pair: 'USD/LKR',
     bigFigure: '',
-    rows: {},          // tenor -> { rate: '', premium: '', perDay: bool }
-    customEdges: [],   // [{ id, from, to, payer, receiver }] — Advanced panel only
+    rateEntries: [],     // [{ id, node, rate: '30/40' }]
+    premiumEntries: [],  // [{ id, from, to, premium: '5/5.5', perDay: bool }]
     valueDates: null,
     solved: null,
+    impliedPremiums: [],
   };
 
-  let nextEdgeId = 1;
-
-  function makeDefaultRows() {
-    const rows = {};
-    TENORS.forEach((t) => {
-      rows[t] = { rate: '', premium: '', perDay: NEAR_DATES.includes(t) };
-    });
-    return rows;
-  }
+  let nextRateId = 1;
+  let nextPremiumId = 1;
 
   function todayKey() {
     return FXCalendar.fmt(state.tradeDate);
   }
 
+  function isNum(v) { return typeof v === 'number' && !Number.isNaN(v); }
+
   /* ---------------- Shorthand parsing ---------------- */
 
-  /** "30/40" + bigFigure "336" -> {bid:336.30, offer:336.40}. Single value applies to both sides. "336.30/336.40" (no big figure) works too. */
+  /** "30/40" + bigFigure "336" -> {bid:336.30, offer:336.40}, with big-figure rollover
+   *  ("30/10" with BF 336 -> 336.30/337.10, since offer's points < bid's points). */
   function parseRateShorthand(str, bigFigureStr) {
     const empty = { bid: null, offer: null };
     if (!str || !str.trim()) return empty;
@@ -83,9 +82,6 @@
     }
 
     if (hasBF && Math.abs(bidRaw) < 100 && Math.abs(offerRaw) < 100) {
-      // Big-figure rollover: if the offer's points are numerically smaller
-      // than the bid's, the offer has crossed into the next hundred,
-      // e.g. Big Figure 336, "30/10" -> 336.30 / 337.10 (not 336.10).
       const bid = bf + bidRaw / 100;
       const offerBigFigure = offerRaw < bidRaw ? bf + 1 : bf;
       const offer = offerBigFigure + offerRaw / 100;
@@ -104,67 +100,55 @@
     return { payer: resolve(parts[0]), receiver: resolve(parts[1]) };
   }
 
-  /** Turns a typed premium value into the graph edge value (Spot -> tenor). */
-  function premiumToEdgeValue(t, val, days) {
-    if (val === null) return null;
-    const isNear = NEAR_DATES.includes(t);
-    const perDay = isNear && state.rows[t].perDay;
-    const scaled = val / 100; // premium is always points, e.g. 5 -> 0.05
-    const mult = perDay ? Math.abs(days[t]) : 1;
-    const sign = isNear ? -1 : 1;
-    return sign * scaled * mult;
+  /** Turns a typed premium value into the graph edge value (from -> to), always chronologically additive. */
+  function premiumToEdgeValue(fromNode, toNode, rawVal, perDay) {
+    if (rawVal === null) return null;
+    const scaled = rawVal / 100; // premium is always points, e.g. 5 -> 0.05
+    if (!perDay) return scaled;
+    const fromDate = state.valueDates.dates[fromNode];
+    const toDate = state.valueDates.dates[toNode];
+    const days = FXCalendar.calendarDaysBetween(fromDate, toDate);
+    return scaled * days;
   }
 
   /* ---------------- Solve ---------------- */
   function recompute() {
     state.valueDates = FXCalculator.buildValueDates(state.tradeDate);
-    const days = state.valueDates.days;
 
     const edges = [];
-    const anchors = [];
-
-    TENORS.forEach((t) => {
-      const row = state.rows[t];
-
-      const rate = parseRateShorthand(row.rate, state.bigFigure);
-      if (rate.bid !== null || rate.offer !== null) {
-        anchors.push({ node: t, bid: rate.bid, offer: rate.offer });
-      }
-
-      if (t !== 'spot') {
-        const prem = parsePremiumShorthand(row.premium);
-        const payerEdge = premiumToEdgeValue(t, prem.payer, days);
-        const receiverEdge = premiumToEdgeValue(t, prem.receiver, days);
-        if (payerEdge !== null || receiverEdge !== null) {
-          edges.push({ from: 'spot', to: t, payer: payerEdge, receiver: receiverEdge });
-        }
+    state.premiumEntries.forEach((pe) => {
+      const prem = parsePremiumShorthand(pe.premium);
+      const payerEdge = premiumToEdgeValue(pe.from, pe.to, prem.payer, pe.perDay);
+      const receiverEdge = premiumToEdgeValue(pe.from, pe.to, prem.receiver, pe.perDay);
+      if (payerEdge !== null || receiverEdge !== null) {
+        edges.push({ from: pe.from, to: pe.to, payer: payerEdge, receiver: receiverEdge });
       }
     });
 
-    state.customEdges.forEach((e) => {
-      if (e.payer !== null || e.receiver !== null) edges.push(e);
+    const anchors = [];
+    state.rateEntries.forEach((re) => {
+      const r = parseRateShorthand(re.rate, state.bigFigure);
+      if (r.bid !== null || r.offer !== null) {
+        anchors.push({ node: re.node, bid: r.bid, offer: r.offer });
+      }
     });
 
     state.solved = FXCalculator.solveMarket(edges, anchors, state.valueDates);
+    state.impliedPremiums = FXCalculator.computeImpliedPremiums(anchors);
   }
 
   /* ---------------- Draft persistence ---------------- */
-  function makeDefaultCustomEdges() {
-    return FXCalculator.DEFAULT_INTERVALS.map(([from, to]) => ({
-      id: nextEdgeId++, from, to, payer: null, receiver: null,
-    }));
-  }
-
   function loadDraft() {
     const draft = FXStorage.loadDraft();
-    if (draft && draft.tradeDateKey === todayKey() && draft.rows) {
-      state.rows = draft.rows;
+    if (draft && draft.tradeDateKey === todayKey() && draft.rateEntries) {
+      state.rateEntries = draft.rateEntries;
+      state.premiumEntries = draft.premiumEntries || [];
       state.bigFigure = draft.bigFigure || '';
-      state.customEdges = draft.customEdges || [];
-      nextEdgeId = Math.max(1, ...state.customEdges.map((e) => e.id + 1), 1);
+      nextRateId = Math.max(1, ...state.rateEntries.map((e) => e.id + 1), 1);
+      nextPremiumId = Math.max(1, ...state.premiumEntries.map((e) => e.id + 1), 1);
     } else {
-      state.rows = makeDefaultRows();
-      state.customEdges = makeDefaultCustomEdges();
+      state.rateEntries = [];
+      state.premiumEntries = [];
     }
   }
 
@@ -173,15 +157,16 @@
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       FXStorage.saveDraft({
-        tradeDateKey: todayKey(), rows: state.rows, bigFigure: state.bigFigure,
-        customEdges: state.customEdges, pair: state.pair,
+        tradeDateKey: todayKey(),
+        rateEntries: state.rateEntries,
+        premiumEntries: state.premiumEntries,
+        bigFigure: state.bigFigure,
+        pair: state.pair,
       });
     }, 300);
   }
 
   /* ---------------- Formatting helpers ---------------- */
-  function isNum(v) { return typeof v === 'number' && !Number.isNaN(v); }
-
   function fmtNum(v, dp = 2) {
     if (typeof v !== 'number' || Number.isNaN(v)) return '—';
     return v.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -191,13 +176,11 @@
     const s = v >= 0 ? '+' : '';
     return s + fmtNum(v, dp);
   }
-  function fmtDateLabel(d) {
-    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
-  }
-
-  /** Strips trailing zeros for clean shorthand display: 20.00 -> "20", 5.50 -> "5.5". */
   function fmtTrim(v, dp = 2) {
     return parseFloat(v.toFixed(dp)).toString();
+  }
+  function fmtDateLabel(d) {
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
   }
 
   /** [bid, offer] -> ["20","40"] shorthand within the shared Big Figure's hundred, else full rate. */
@@ -219,191 +202,112 @@
     document.getElementById('tradeDateDisplay').textContent = fmtDateLabel(state.tradeDate);
   }
 
-  /* ==================================================================
-     RENDER: Fast Entry ladder
-     ================================================================== */
-  function renderLadderTable() {
-    const tbody = document.getElementById('ladderTableBody');
-    tbody.innerHTML = '';
-    TENORS.forEach((t) => {
-      const isNear = NEAR_DATES.includes(t);
-      const date = state.valueDates.dates[t];
-      const tr = document.createElement('tr');
-      if (t === 'spot') tr.classList.add('row-spot');
-
-      const premiumCell = t === 'spot'
-        ? '<td class="val-muted mono">—</td>'
-        : `<td><input type="text" class="cell-input shorthand" data-tenor="${t}" data-kind="premium" placeholder="e.g. 5/5.5"></td>`;
-      const perDayCell = isNear
-        ? `<td><input type="checkbox" data-tenor="${t}" data-kind="perday"></td>`
-        : '<td class="val-muted small-text">—</td>';
-
-      tr.innerHTML = `
-        <td><span class="tenor-name">${LABELS[t]}</span><span class="tenor-date">${fmtDateLabel(date)}</span></td>
-        <td><input type="text" class="cell-input shorthand" data-tenor="${t}" data-kind="rate" placeholder="e.g. 30/40"></td>
-        ${premiumCell}
-        ${perDayCell}
-      `;
-      tbody.appendChild(tr);
-    });
-
-    // populate typed values + checkboxes
-    TENORS.forEach((t) => {
-      const row = state.rows[t];
-      const rateInput = tbody.querySelector(`input[data-tenor="${t}"][data-kind="rate"]`);
-      if (rateInput) rateInput.value = row.rate;
-      const premInput = tbody.querySelector(`input[data-tenor="${t}"][data-kind="premium"]`);
-      if (premInput) premInput.value = row.premium;
-      const perDayInput = tbody.querySelector(`input[data-tenor="${t}"][data-kind="perday"]`);
-      if (perDayInput) perDayInput.checked = !!row.perDay;
-    });
-
-    tbody.querySelectorAll('input[type="text"]').forEach((input) => {
-      input.addEventListener('input', () => {
-        const t = input.dataset.tenor;
-        state.rows[t][input.dataset.kind] = input.value;
-        recompute();
-        renderDownstream();
-        applyAutoFill();
-        scheduleSaveDraft();
-      });
-    });
-    tbody.querySelectorAll('input[type="checkbox"]').forEach((input) => {
-      input.addEventListener('change', () => {
-        const t = input.dataset.tenor;
-        state.rows[t].perDay = input.checked;
-        recompute();
-        renderDownstream();
-        applyAutoFill();
-        scheduleSaveDraft();
-      });
-    });
-
-    attachLadderKeyboardNav();
-    applyAutoFill();
+  function populateTenorSelect(sel) {
+    sel.innerHTML = TENORS.map((t) => `<option value="${t}">${LABELS[t]}</option>`).join('');
   }
-
-  /** When a box is empty, show the solver's answer in it (muted) instead of leaving it blank. */
-  function applyAutoFill() {
-    TENORS.forEach((t) => {
-      const c = state.solved.curve[t];
-      const row = state.rows[t];
-
-      const rateInput = document.querySelector(`#ladderTableBody input[data-tenor="${t}"][data-kind="rate"]`);
-      if (rateInput && document.activeElement !== rateInput) {
-        const dealAgreed = isNum(c.payerPremium) && isNum(c.receiverPremium) && Math.abs(c.payerPremium - c.receiverPremium) < 1e-9;
-        if (!row.rate.trim() && dealAgreed && (c.payerBid !== null || c.payerOffer !== null)) {
-          rateInput.value = `${fmtNum(c.payerBid)} / ${fmtNum(c.payerOffer)}`;
-          rateInput.classList.add('auto-filled');
-        } else if (!row.rate.trim()) {
-          rateInput.value = '';
-          rateInput.classList.remove('auto-filled');
-        } else {
-          rateInput.classList.remove('auto-filled');
-        }
-      }
-
-      if (t === 'spot') return;
-      const premInput = document.querySelector(`#ladderTableBody input[data-tenor="${t}"][data-kind="premium"]`);
-      if (premInput && document.activeElement !== premInput) {
-        if (!row.premium.trim() && (c.payerPremium !== null || c.receiverPremium !== null)) {
-          premInput.value = `${fmtSigned(c.payerPremium)} / ${fmtSigned(c.receiverPremium)}`;
-          premInput.classList.add('auto-filled');
-        } else if (!row.premium.trim()) {
-          premInput.value = '';
-          premInput.classList.remove('auto-filled');
-        } else {
-          premInput.classList.remove('auto-filled');
-        }
-      }
-    });
-  }
-
-  function attachLadderKeyboardNav() {
-    const inputs = Array.from(document.querySelectorAll('#ladderTableBody input[type="text"]'));
-    inputs.forEach((input, idx) => {
-      input.addEventListener('focus', () => { input.classList.remove('auto-filled'); if (isAutoText(input)) input.value = ''; });
-      input.addEventListener('blur', applyAutoFill);
-      input.addEventListener('keydown', (e) => {
-        const td = input.closest('td');
-        const colIndex = Array.from(td.parentElement.children).indexOf(td);
-        const rowEl = input.closest('tr');
-        const rowIndex = Array.from(rowEl.parentElement.children).indexOf(rowEl);
-        const allRows = Array.from(rowEl.parentElement.children);
-
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          const next = inputs[idx + 1];
-          if (next) next.focus();
-        } else if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          const targetRow = allRows[rowIndex + 1];
-          const targetInput = targetRow && targetRow.children[colIndex] && targetRow.children[colIndex].querySelector('input[type="text"]');
-          if (targetInput) targetInput.focus();
-        } else if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          const targetRow = allRows[rowIndex - 1];
-          const targetInput = targetRow && targetRow.children[colIndex] && targetRow.children[colIndex].querySelector('input[type="text"]');
-          if (targetInput) targetInput.focus();
-        } else if (e.key === 'ArrowRight' && input.selectionStart === input.value.length) {
-          const next = inputs[idx + 1];
-          if (next) { e.preventDefault(); next.focus(); }
-        } else if (e.key === 'ArrowLeft' && input.selectionStart === 0) {
-          const prev = inputs[idx - 1];
-          if (prev) { e.preventDefault(); prev.focus(); }
-        }
-      });
-    });
-  }
-  function isAutoText(input) { return input.classList.contains('auto-filled'); }
 
   /* ==================================================================
-     RENDER: Advanced custom interval panel
+     RENDER: Rate Entries (flexible list)
      ================================================================== */
-  function intervalLabel(e) { return `${LABELS[e.from]} → ${LABELS[e.to]}`; }
-
-  function renderIntervalTable() {
-    const tbody = document.getElementById('intervalTableBody');
+  function renderRateTable() {
+    const tbody = document.getElementById('rateTableBody');
     tbody.innerHTML = '';
-    state.customEdges.forEach((e) => {
+    state.rateEntries.forEach((re) => {
+      const date = state.valueDates.dates[re.node];
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td><span class="tenor-name">${intervalLabel(e)}</span></td>
-        <td><input type="number" step="any" class="cell-input bid-input" data-id="${e.id}" data-side="payer" placeholder="—"></td>
-        <td><input type="number" step="any" class="cell-input offer-input" data-id="${e.id}" data-side="receiver" placeholder="—"></td>
-        <td><button class="btn danger" data-remove-edge="${e.id}" style="padding:3px 8px;">✕</button></td>
+        <td><span class="tenor-name">${LABELS[re.node]}</span><span class="tenor-date">${fmtDateLabel(date)}</span></td>
+        <td><input type="text" class="cell-input shorthand" data-id="${re.id}" placeholder="e.g. 30/40"></td>
+        <td><button class="btn danger" data-remove-rate="${re.id}" style="padding:3px 8px;">✕</button></td>
       `;
       tbody.appendChild(tr);
     });
 
     tbody.querySelectorAll('input').forEach((input) => {
       const id = Number(input.dataset.id);
-      const edge = state.customEdges.find((e) => e.id === id);
-      const v = edge[input.dataset.side];
-      input.value = v === null || v === undefined ? '' : v;
+      const entry = state.rateEntries.find((e) => e.id === id);
+      input.value = entry.rate;
       input.addEventListener('input', () => {
-        edge[input.dataset.side] = input.value.trim() === '' ? null : parseFloat(input.value);
+        entry.rate = input.value;
         recompute();
         renderDownstream();
-        applyAutoFill();
         scheduleSaveDraft();
       });
+      input.addEventListener('keydown', (e) => handleEnterToNext(e, '#rateTableBody input[type="text"]'));
     });
 
-    tbody.querySelectorAll('[data-remove-edge]').forEach((btn) => {
+    tbody.querySelectorAll('[data-remove-rate]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        state.customEdges = state.customEdges.filter((e) => e.id !== Number(btn.dataset.removeEdge));
+        state.rateEntries = state.rateEntries.filter((e) => e.id !== Number(btn.dataset.removeRate));
         recompute();
-        renderIntervalTable();
+        renderRateTable();
         renderDownstream();
-        applyAutoFill();
         scheduleSaveDraft();
       });
     });
   }
 
-  function populateTenorSelect(sel) {
-    sel.innerHTML = TENORS.map((t) => `<option value="${t}">${LABELS[t]}</option>`).join('');
+  /* ==================================================================
+     RENDER: Premium Entries (flexible list)
+     ================================================================== */
+  function renderPremiumTable() {
+    const tbody = document.getElementById('premiumTableBody');
+    tbody.innerHTML = '';
+    state.premiumEntries.forEach((pe) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="tenor-name">${LABELS[pe.from]}</td>
+        <td class="tenor-name">${LABELS[pe.to]}</td>
+        <td><input type="text" class="cell-input shorthand" data-id="${pe.id}" data-kind="premium" placeholder="e.g. 5/5.5"></td>
+        <td><input type="checkbox" data-id="${pe.id}" data-kind="perday"></td>
+        <td><button class="btn danger" data-remove-premium="${pe.id}" style="padding:3px 8px;">✕</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    tbody.querySelectorAll('input[type="text"]').forEach((input) => {
+      const id = Number(input.dataset.id);
+      const entry = state.premiumEntries.find((e) => e.id === id);
+      input.value = entry.premium;
+      input.addEventListener('input', () => {
+        entry.premium = input.value;
+        recompute();
+        renderDownstream();
+        scheduleSaveDraft();
+      });
+      input.addEventListener('keydown', (e) => handleEnterToNext(e, '#premiumTableBody input[type="text"]'));
+    });
+
+    tbody.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+      const id = Number(input.dataset.id);
+      const entry = state.premiumEntries.find((e) => e.id === id);
+      input.checked = !!entry.perDay;
+      input.addEventListener('change', () => {
+        entry.perDay = input.checked;
+        recompute();
+        renderDownstream();
+        scheduleSaveDraft();
+      });
+    });
+
+    tbody.querySelectorAll('[data-remove-premium]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.premiumEntries = state.premiumEntries.filter((e) => e.id !== Number(btn.dataset.removePremium));
+        recompute();
+        renderPremiumTable();
+        renderDownstream();
+        scheduleSaveDraft();
+      });
+    });
+  }
+
+  function handleEnterToNext(e, selector) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const inputs = Array.from(document.querySelectorAll(selector));
+    const idx = inputs.indexOf(e.target);
+    const next = inputs[idx + 1];
+    if (next) next.focus();
   }
 
   /* ==================================================================
@@ -418,8 +322,8 @@
     if (!anySpot) {
       el.className = 'solver-status warn';
       el.textContent = connectedCount > 1
-        ? `${connectedCount} tenors linked by points, but no anchor yet — type Spot's Rate to see actual levels.`
-        : 'Set a Big Figure, then type Spot\'s rate — everything else can chain off it.';
+        ? `${connectedCount} tenors linked by points, but no anchor yet — add a Rate for Spot (or any linked tenor) to see actual levels.`
+        : 'Add a Rate for at least one value date, then a Premium between any two, and the rest chains off it.';
       return;
     }
     el.className = 'solver-status ok';
@@ -436,15 +340,54 @@
       const c = state.solved.curve[t];
       const tr = document.createElement('tr');
       if (t === 'spot') tr.classList.add('row-spot');
-      const payerPair = fmtRatePairParts(c.payerBid, c.payerOffer);
-      const receiverPair = fmtRatePairParts(c.receiverBid, c.receiverOffer);
-      tr.innerHTML = `
-        <td><span class="tenor-name">${c.label}</span><span class="tenor-date">${fmtDateLabel(c.date)}</span></td>
-        <td class="mono"><span class="val-bid">${payerPair[0]}</span>/<span class="val-offer">${payerPair[1]}</span></td>
-        <td class="mono"><span class="val-bid">${receiverPair[0]}</span>/<span class="val-offer">${receiverPair[1]}</span></td>
-      `;
+
+      // Payer only ever deals on the bid-anchored chain (sell near @ bid,
+      // buy back far @ bid + Payer premium). Receiver only ever deals on
+      // the offer-anchored chain (buy near @ offer, sell back far @ offer
+      // + Receiver premium). payerOffer/receiverBid are "cross" numbers
+      // neither side actually trades on, so only one figure per side is
+      // shown here, in the slot that matches which leg it came from.
+      const payerRate = c.payerBid;
+      const receiverRate = c.receiverOffer;
+      const dealAgreed = isNum(payerRate) && isNum(receiverRate) && Math.abs(payerRate - receiverRate) < 1e-9;
+
+      if (dealAgreed) {
+        const single = fmtRatePairParts(payerRate, payerRate)[0];
+        tr.innerHTML = `
+          <td><span class="tenor-name">${c.label}</span><span class="tenor-date">${fmtDateLabel(c.date)}</span></td>
+          <td class="mono" colspan="2"><span class="val-bid">${single}</span> <span class="hint">(deal)</span></td>
+        `;
+      } else {
+        const payerShort = fmtRatePairParts(payerRate, null)[0];
+        const receiverShort = fmtRatePairParts(null, receiverRate)[1];
+        tr.innerHTML = `
+          <td><span class="tenor-name">${c.label}</span><span class="tenor-date">${fmtDateLabel(c.date)}</span></td>
+          <td class="mono"><span class="val-bid">${payerShort}</span>/<span class="val-offer">—</span></td>
+          <td class="mono"><span class="val-bid">—</span>/<span class="val-offer">${receiverShort}</span></td>
+        `;
+      }
       tbody.appendChild(tr);
     });
+  }
+
+  /* ==================================================================
+     RENDER: Implied Premiums (from 2+ direct rates)
+     ================================================================== */
+  function renderImpliedPremiums() {
+    const card = document.getElementById('impliedCard');
+    const tbody = document.getElementById('impliedTableBody');
+    if (!state.impliedPremiums.length) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    tbody.innerHTML = state.impliedPremiums.map((ip) => `
+      <tr>
+        <td class="tenor-name">${LABELS[ip.from]} → ${LABELS[ip.to]}</td>
+        <td class="mono val-bid">${fmtSigned(ip.payerPremium)}</td>
+        <td class="mono val-offer">${fmtSigned(ip.receiverPremium)}</td>
+      </tr>
+    `).join('');
   }
 
   /* ==================================================================
@@ -462,6 +405,7 @@
   function renderDownstream() {
     renderQuoteScreen();
     renderSolverStatus();
+    renderImpliedPremiums();
   }
 
   /* ==================================================================
@@ -476,33 +420,49 @@
     document.getElementById('bigFigureInput').addEventListener('input', (e) => {
       state.bigFigure = e.target.value;
       recompute();
+      renderRateTable();
       renderDownstream();
-      applyAutoFill();
       scheduleSaveDraft();
     });
 
-    populateTenorSelect(document.getElementById('customFrom'));
-    populateTenorSelect(document.getElementById('customTo'));
-    document.getElementById('customTo').value = TENORS[1];
-
-    document.getElementById('addCustomIntervalBtn').addEventListener('click', () => {
-      const from = document.getElementById('customFrom').value;
-      const to = document.getElementById('customTo').value;
-      if (from === to) { alert('Pick two different value dates.'); return; }
-      state.customEdges.push({ id: nextEdgeId++, from, to, payer: null, receiver: null });
-      renderIntervalTable();
+    populateTenorSelect(document.getElementById('newRateNode'));
+    document.getElementById('newRateNode').value = 'spot';
+    document.getElementById('addRateBtn').addEventListener('click', () => {
+      const node = document.getElementById('newRateNode').value;
+      state.rateEntries.push({ id: nextRateId++, node, rate: '' });
+      renderRateTable();
       scheduleSaveDraft();
+      const inputs = document.querySelectorAll('#rateTableBody input[type="text"]');
+      if (inputs.length) inputs[inputs.length - 1].focus();
+    });
+
+    populateTenorSelect(document.getElementById('newPremiumFrom'));
+    populateTenorSelect(document.getElementById('newPremiumTo'));
+    document.getElementById('newPremiumFrom').value = 'cash';
+    document.getElementById('newPremiumTo').value = 'spot';
+    document.getElementById('addPremiumBtn').addEventListener('click', () => {
+      const from = document.getElementById('newPremiumFrom').value;
+      const to = document.getElementById('newPremiumTo').value;
+      if (from === to) { alert('Pick two different value dates.'); return; }
+      state.premiumEntries.push({
+        id: nextPremiumId++, from, to, premium: '',
+        perDay: NEAR_DATES.includes(from) || NEAR_DATES.includes(to),
+      });
+      renderPremiumTable();
+      scheduleSaveDraft();
+      const inputs = document.querySelectorAll('#premiumTableBody input[type="text"]');
+      if (inputs.length) inputs[inputs.length - 1].focus();
     });
 
     document.getElementById('clearInputsBtn').addEventListener('click', () => {
       if (!confirm('Clear every input field?')) return;
-      state.rows = makeDefaultRows();
-      state.customEdges = [];
+      state.rateEntries = [];
+      state.premiumEntries = [];
       state.bigFigure = '';
       document.getElementById('bigFigureInput').value = '';
       recompute();
-      renderLadderTable();
-      renderIntervalTable();
+      renderRateTable();
+      renderPremiumTable();
       renderDownstream();
       scheduleSaveDraft();
     });
@@ -539,44 +499,48 @@
     document.getElementById('applyPasteBtn').addEventListener('click', applyPasteAsRates);
   }
 
-  /** Excel import: expects columns Tenor, Payer (or Bid), Receiver (or Offer) — applied straight into the Rate boxes. */
+  /** Add-or-update a Rate Entry for a given tenor. */
+  function upsertRateEntry(node, rateStr) {
+    const existing = state.rateEntries.find((e) => e.node === node);
+    if (existing) { existing.rate = rateStr; }
+    else { state.rateEntries.push({ id: nextRateId++, node, rate: rateStr }); }
+  }
+
+  /** Excel import: expects columns Tenor, Bid (or Payer), Offer (or Receiver) — added/updated as Rate Entries. */
   function applyImportedRows(rows) {
     let applied = 0;
     rows.forEach((row) => {
       const label = String(row.Tenor || row.tenor || '').toLowerCase();
       const key = TENORS.find((t) => LABELS[t].toLowerCase() === label || t.toLowerCase() === label);
       if (!key) return;
-      const payer = parseFloat(row.Payer ?? row.payer ?? row.Bid ?? row.bid);
-      const receiver = parseFloat(row.Receiver ?? row.receiver ?? row.Offer ?? row.offer);
-      if (isFinite(payer) && isFinite(receiver)) state.rows[key].rate = `${payer}/${receiver}`;
-      applied++;
+      const bid = parseFloat(row.Bid ?? row.bid ?? row.Payer ?? row.payer);
+      const offer = parseFloat(row.Offer ?? row.offer ?? row.Receiver ?? row.receiver);
+      if (isFinite(bid) && isFinite(offer)) { upsertRateEntry(key, `${bid}/${offer}`); applied++; }
     });
     recompute();
-    renderLadderTable();
+    renderRateTable();
     renderDownstream();
     scheduleSaveDraft();
-    alert(`Imported ${applied} tenor rows into Rate boxes.`);
+    alert(`Imported ${applied} tenor rows into Rate Entries.`);
   }
 
   function applyPasteAsRates() {
     const text = document.getElementById('pasteBox').value;
     const parsed = FXExcel.parsePastedQuotes(text);
     parsed.forEach((row) => {
-      if (row.bid !== null && row.offer !== null) {
-        state.rows[row.tenorKey].rate = `${row.bid}/${row.offer}`;
-      }
+      if (row.bid !== null && row.offer !== null) upsertRateEntry(row.tenorKey, `${row.bid}/${row.offer}`);
     });
     recompute();
-    renderLadderTable();
+    renderRateTable();
     renderDownstream();
     scheduleSaveDraft();
-    alert(`Applied ${parsed.length} pasted rows into Rate boxes.`);
+    alert(`Applied ${parsed.length} pasted rows into Rate Entries.`);
   }
 
   function renderAllViews() {
     renderHeader();
-    renderLadderTable();
-    renderIntervalTable();
+    renderRateTable();
+    renderPremiumTable();
     renderDownstream();
   }
 
