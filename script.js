@@ -44,6 +44,8 @@
     valueDates: null,
     solved: null,
     impliedPremiums: [],
+    matches: [], // [{ from, to, side }] — typed rate agrees with typed premium
+    mismatches: [], // [{ from, to, side, typedPremiumPts, actualDiffPts, offPts, suggestedFromRate, suggestedToRate }]
   };
 
   let nextRateId = 1;
@@ -135,6 +137,64 @@
 
     state.solved = FXCalculator.solveMarket(edges, anchors, state.valueDates);
     state.impliedPremiums = FXCalculator.computeImpliedPremiums(anchors);
+
+    // Match detection: a Premium Entry "confirms" against the board when
+    // BOTH its endpoints also have a directly-typed Rate Entry (not a
+    // derived value) and that typed difference agrees with the typed
+    // premium, within a small rounding tolerance.
+    const TOL = 0.0009; // ~0.09 points
+    state.matches = [];
+    state.mismatches = [];
+    state.premiumEntries.forEach((pe) => {
+      const prem = parsePremiumShorthand(pe.premium);
+      const payerEdge = premiumToEdgeValue(pe.from, pe.to, prem.payer, pe.perDay);
+      const receiverEdge = premiumToEdgeValue(pe.from, pe.to, prem.receiver, pe.perDay);
+      const fromAnchor = anchors.find((a) => a.node === pe.from);
+      const toAnchor = anchors.find((a) => a.node === pe.to);
+      if (!fromAnchor || !toAnchor) return;
+
+      const fromDate = state.valueDates.dates[pe.from];
+      const toDate = state.valueDates.dates[pe.to];
+      const days = FXCalendar.calendarDaysBetween(fromDate, toDate);
+      // If Per Day is ticked, "the premium" the dealer typed is points-PER-DAY,
+      // not the flat total — suggestions must be converted back to that same
+      // per-day unit, not left as the day-scaled total used internally.
+      const toDisplayUnit = (totalPts) => (pe.perDay && days !== 0 ? totalPts / days : totalPts);
+      const unitLabel = pe.perDay ? 'p/day' : 'p';
+
+      if (isNum(fromAnchor.bid) && isNum(toAnchor.bid) && isNum(payerEdge)) {
+        const actualTotalPts = (toAnchor.bid - fromAnchor.bid) * 100;
+        const typedDisplayPts = prem.payer; // as literally typed, already in the right unit
+        const actualDisplayPts = toDisplayUnit(actualTotalPts);
+        const offPts = actualDisplayPts - typedDisplayPts;
+        if (Math.abs((toAnchor.bid - fromAnchor.bid) - payerEdge) < TOL) {
+          state.matches.push({ from: pe.from, to: pe.to, side: 'payer' });
+        } else {
+          state.mismatches.push({
+            from: pe.from, to: pe.to, side: 'payer', unitLabel,
+            typedDisplayPts, actualDisplayPts, offPts,
+            suggestedFromRate: toAnchor.bid - payerEdge,
+            suggestedToRate: fromAnchor.bid + payerEdge,
+          });
+        }
+      }
+      if (isNum(fromAnchor.offer) && isNum(toAnchor.offer) && isNum(receiverEdge)) {
+        const actualTotalPts = (toAnchor.offer - fromAnchor.offer) * 100;
+        const typedDisplayPts = prem.receiver;
+        const actualDisplayPts = toDisplayUnit(actualTotalPts);
+        const offPts = actualDisplayPts - typedDisplayPts;
+        if (Math.abs((toAnchor.offer - fromAnchor.offer) - receiverEdge) < TOL) {
+          state.matches.push({ from: pe.from, to: pe.to, side: 'receiver' });
+        } else {
+          state.mismatches.push({
+            from: pe.from, to: pe.to, side: 'receiver', unitLabel,
+            typedDisplayPts, actualDisplayPts, offPts,
+            suggestedFromRate: toAnchor.offer - receiverEdge,
+            suggestedToRate: fromAnchor.offer + receiverEdge,
+          });
+        }
+      }
+    });
   }
 
   /* ---------------- Draft persistence ---------------- */
@@ -217,7 +277,7 @@
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td><span class="tenor-name">${LABELS[re.node]}</span><span class="tenor-date">${fmtDateLabel(date)}</span></td>
-        <td><input type="text" class="cell-input shorthand" data-id="${re.id}" placeholder="e.g. 30/40"></td>
+        <td><input type="text" class="cell-input shorthand" data-id="${re.id}" placeholder="30/40 or 75/ or /75"></td>
         <td><button class="btn danger" data-remove-rate="${re.id}" style="padding:3px 8px;">✕</button></td>
       `;
       tbody.appendChild(tr);
@@ -333,41 +393,171 @@
   /* ==================================================================
      RENDER: Dealer Quote Screen (read-only big board)
      ================================================================== */
-  function renderQuoteScreen() {
-    const tbody = document.getElementById('quoteScreenBody');
-    tbody.innerHTML = '';
-    TENORS.forEach((t) => {
-      const c = state.solved.curve[t];
-      const tr = document.createElement('tr');
-      if (t === 'spot') tr.classList.add('row-spot');
+  /**
+   * Builds the ladder-and-bracket view: one row per tenor, Payer's single
+   * dealing rate (bid-anchored chain) on the left, Receiver's (offer-
+   * anchored chain) on the right, a small "premium from Spot" figure
+   * under each rate, a Diff column in the middle showing the Receiver-
+   * minus-Payer spread at that tenor, and a bracket rail on the inner
+   * edge of each column with a premium label between EVERY consecutive
+   * tenor pair (Cash-Tom, Tom-Spot, Spot-1W, 1W-2W, 2W-1M, 1M-2M, 2M-3M,
+   * 3M-6M, 6M-12M) — drawn always, showing "—" wherever either side of
+   * that pair isn't solved yet.
+   */
+  function fmtPremiumPts(v) {
+    if (!isNum(v)) return '';
+    const pts = v * 100;
+    return (pts >= 0 ? '+' : '') + fmtTrim(pts) + 'p from Spot';
+  }
+  function fmtDiffPts(payerRate, receiverRate) {
+    if (!isNum(payerRate) || !isNum(receiverRate)) return '—';
+    const pts = (receiverRate - payerRate) * 100;
+    return (pts >= 0 ? '+' : '') + fmtTrim(pts);
+  }
 
-      // Payer only ever deals on the bid-anchored chain (sell near @ bid,
-      // buy back far @ bid + Payer premium). Receiver only ever deals on
-      // the offer-anchored chain (buy near @ offer, sell back far @ offer
-      // + Receiver premium). payerOffer/receiverBid are "cross" numbers
-      // neither side actually trades on, so only one figure per side is
-      // shown here, in the slot that matches which leg it came from.
-      const payerRate = c.payerBid;
-      const receiverRate = c.receiverOffer;
-      const dealAgreed = isNum(payerRate) && isNum(receiverRate) && Math.abs(payerRate - receiverRate) < 1e-9;
+  function buildLadderSVG(curve, matches, mismatches) {
+    const n = TENORS.length;
+    const rowH = 34;
+    const slot = 44;
+    const topPad = 26;
+    const height = topPad + n * slot + 14;
 
-      if (dealAgreed) {
-        const single = fmtRatePairParts(payerRate, payerRate)[0];
-        tr.innerHTML = `
-          <td><span class="tenor-name">${c.label}</span><span class="tenor-date">${fmtDateLabel(c.date)}</span></td>
-          <td class="mono" colspan="2"><span class="val-bid">${single}</span> <span class="hint">(deal)</span></td>
-        `;
-      } else {
-        const payerShort = fmtRatePairParts(payerRate, null)[0];
-        const receiverShort = fmtRatePairParts(null, receiverRate)[1];
-        tr.innerHTML = `
-          <td><span class="tenor-name">${c.label}</span><span class="tenor-date">${fmtDateLabel(c.date)}</span></td>
-          <td class="mono"><span class="val-bid">${payerShort}</span>/<span class="val-offer">—</span></td>
-          <td class="mono"><span class="val-bid">—</span>/<span class="val-offer">${receiverShort}</span></td>
-        `;
-      }
-      tbody.appendChild(tr);
+    const colW = 210;
+    const payerX = 4;
+    const payerRailX = payerX + colW + 26;
+    const receiverX = 616 - colW;
+    const receiverRailX = receiverX - 26;
+    const diffX = (payerRailX + receiverRailX) / 2;
+    const matchPayerX = payerRailX + 18;
+    const matchReceiverX = receiverRailX - 18;
+
+    const rowY = (i) => topPad + i * slot;
+    const rowCenterY = (i) => rowY(i) + rowH / 2;
+
+    let svg = `<svg class="ladder-svg" viewBox="0 0 620 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets and spread">`;
+    svg += `<text x="${payerX}" y="14" class="ladder-heading">Payer</text>`;
+    svg += `<text x="${diffX}" y="14" text-anchor="middle" class="ladder-heading">Diff</text>`;
+    svg += `<text x="${receiverX + colW}" y="14" text-anchor="end" class="ladder-heading">Receiver</text>`;
+
+    TENORS.forEach((t, i) => {
+      const c = curve[t];
+      const y = rowY(i);
+      const cy = rowCenterY(i);
+      const valY = y + 14;
+      const premY = y + 27;
+      const payerVal = fmtRatePairParts(c.payerBid, null)[0];
+      const receiverVal = fmtRatePairParts(null, c.receiverOffer)[1];
+      const payerPremLabel = fmtPremiumPts(c.payerPremium);
+      const receiverPremLabel = fmtPremiumPts(c.receiverPremium);
+      const diffLabel = fmtDiffPts(c.payerBid, c.receiverOffer);
+      const spotClass = t === 'spot' ? ' ladder-row-spot' : '';
+      svg += `
+        <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
+        <text x="${payerX + 8}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
+        <text x="${payerX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid">${payerVal}</text>
+        <text x="${payerX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${payerPremLabel}</text>
+
+        <text x="${diffX}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-diff">${diffLabel}</text>
+
+        <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
+        <text x="${receiverX + 8}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
+        <text x="${receiverX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-offer">${receiverVal}</text>
+        <text x="${receiverX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${receiverPremLabel}</text>
+
+        <line x1="${payerX + colW}" y1="${cy}" x2="${payerRailX}" y2="${cy}" class="ladder-tick"></line>
+        <line x1="${receiverRailX}" y1="${cy}" x2="${receiverX}" y2="${cy}" class="ladder-tick"></line>
+      `;
     });
+
+    svg += `<line x1="${payerRailX}" y1="${rowCenterY(0)}" x2="${payerRailX}" y2="${rowCenterY(n - 1)}" class="ladder-rail"></line>`;
+    svg += `<line x1="${receiverRailX}" y1="${rowCenterY(0)}" x2="${receiverRailX}" y2="${rowCenterY(n - 1)}" class="ladder-rail"></line>`;
+
+    for (let i = 0; i < n - 1; i++) {
+      const a = curve[TENORS[i]];
+      const b = curve[TENORS[i + 1]];
+      const midY = (rowCenterY(i) + rowCenterY(i + 1)) / 2;
+      const payerPrem = isNum(a.payerBid) && isNum(b.payerBid) ? fmtTrim((b.payerBid - a.payerBid) * 100) : '—';
+      const receiverPrem = isNum(a.receiverOffer) && isNum(b.receiverOffer) ? fmtTrim((b.receiverOffer - a.receiverOffer) * 100) : '—';
+      svg += `<text x="${payerRailX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium">${payerPrem}</text>`;
+      svg += `<text x="${receiverRailX - 6}" y="${midY}" text-anchor="end" dominant-baseline="central" class="ladder-premium">${receiverPrem}</text>`;
+    }
+
+    (matches || []).forEach((m) => {
+      const fromIdx = TENORS.indexOf(m.from);
+      const toIdx = TENORS.indexOf(m.to);
+      if (fromIdx === -1 || toIdx === -1) return;
+      const y1 = rowCenterY(Math.min(fromIdx, toIdx));
+      const y2 = rowCenterY(Math.max(fromIdx, toIdx));
+      const x = m.side === 'payer' ? matchPayerX : matchReceiverX;
+      const anchor = m.side === 'payer' ? 'start' : 'end';
+      const labelX = m.side === 'payer' ? x + 6 : x - 6;
+      svg += `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" class="ladder-match-line ladder-match-${m.side}"></line>`;
+      svg += `<text x="${labelX}" y="${(y1 + y2) / 2}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-match-label">✓</text>`;
+    });
+
+    (mismatches || []).forEach((m) => {
+      const fromIdx = TENORS.indexOf(m.from);
+      const toIdx = TENORS.indexOf(m.to);
+      if (fromIdx === -1 || toIdx === -1) return;
+      const y1 = rowCenterY(Math.min(fromIdx, toIdx));
+      const y2 = rowCenterY(Math.max(fromIdx, toIdx));
+      const x = m.side === 'payer' ? matchPayerX : matchReceiverX;
+      const anchor = m.side === 'payer' ? 'start' : 'end';
+      const labelX = m.side === 'payer' ? x + 6 : x - 6;
+      svg += `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" class="ladder-mismatch-line ladder-mismatch-${m.side}"></line>`;
+      svg += `<text x="${labelX}" y="${(y1 + y2) / 2}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-mismatch-label">⚠</text>`;
+    });
+
+    svg += `</svg>`;
+    return svg;
+  }
+
+  function renderQuoteScreen() {
+    const wrap = document.getElementById('quoteLadderWrap');
+    wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches);
+    renderMatchBanner();
+    renderMismatchBanner();
+  }
+
+  function renderMatchBanner() {
+    const el = document.getElementById('matchBanner');
+    if (!el) return;
+    if (!state.matches.length) {
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }
+    el.style.display = '';
+    el.innerHTML = state.matches.map((m) => `
+      <div class="match-line match-${m.side}">
+        ✓ ${LABELS[m.from]} → ${LABELS[m.to]} <strong>${m.side === 'payer' ? 'Payer' : 'Receiver'}</strong>
+        premium matches your quoted rates exactly.
+      </div>
+    `).join('');
+  }
+
+  function renderMismatchBanner() {
+    const el = document.getElementById('mismatchBanner');
+    if (!el) return;
+    if (!state.mismatches.length) {
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }
+    el.style.display = '';
+    el.innerHTML = state.mismatches.map((m) => {
+      const sideLabel = m.side === 'payer' ? 'Payer' : 'Receiver';
+      const priceKind = m.side === 'payer' ? 'bid' : 'offer';
+      return `
+      <div class="match-line mismatch-${m.side}">
+        ⚠ ${LABELS[m.from]} → ${LABELS[m.to]} <strong>${sideLabel}</strong>:
+        your rates imply ${fmtSigned(m.actualDisplayPts)}${m.unitLabel} but the premium is typed as ${fmtSigned(m.typedDisplayPts)}${m.unitLabel}
+        (off by ${fmtSigned(m.offPts)}${m.unitLabel}). To fix it, do ONE of:
+        set the premium to <strong>${fmtTrim(m.actualDisplayPts)}</strong>,
+        or set ${LABELS[m.to]} ${priceKind} to <strong>${fmtNum(m.suggestedToRate)}</strong>,
+        or set ${LABELS[m.from]} ${priceKind} to <strong>${fmtNum(m.suggestedFromRate)}</strong>.
+      </div>`;
+    }).join('');
   }
 
   /* ==================================================================
