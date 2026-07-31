@@ -61,6 +61,27 @@
 
   /** "30/40" + bigFigure "336" -> {bid:336.30, offer:336.40}, with big-figure rollover
    *  ("30/10" with BF 336 -> 336.30/337.10, since offer's points < bid's points). */
+  /**
+   * The Big Figure the dealer types is for Spot. Near-dates (Cash/Tom)
+   * virtually never accumulate enough premium to cross into the next
+   * hundred, so they share Spot's Big Figure unchanged. Forward tenors
+   * (1W and beyond) accumulate real swap points day by day and CAN cross
+   * a hundred over enough calendar days — so when there's no other way
+   * to know that tenor's Big Figure yet (no premium chain solved to it),
+   * estimate the rollover using a typical desk premium of ~5.5 points/day
+   * (the middle of the ~4-6 short-leg / ~5-6 per-day forward range) times
+   * the tenor's real calendar days from Spot.
+   */
+  const TYPICAL_PTS_PER_DAY = 5.5;
+  function estimateBigFigureForTenor(tenor, baseBF, days) {
+    if (!isFinite(baseBF)) return baseBF;
+    if (tenor === 'spot' || NEAR_DATES.includes(tenor)) return baseBF;
+    const d = days[tenor] || 0;
+    const estimatedPts = TYPICAL_PTS_PER_DAY * d;
+    const rollover = Math.floor(estimatedPts / 100);
+    return baseBF + rollover;
+  }
+
   function parseRateShorthand(str, bigFigureStr) {
     const empty = { bid: null, offer: null };
     if (!str || !str.trim()) return empty;
@@ -127,13 +148,40 @@
       }
     });
 
-    const anchors = [];
-    state.rateEntries.forEach((re) => {
-      const r = parseRateShorthand(re.rate, state.bigFigure);
-      if (r.bid !== null || r.offer !== null) {
-        anchors.push({ node: re.node, bid: r.bid, offer: r.offer });
-      }
+    const baseBF = parseFloat(state.bigFigure);
+
+    // Pass 1: resolve every Rate Entry with a best-guess Big Figure — Spot
+    // and near-dates use the typed Big Figure unchanged; forward tenors
+    // get a rollover estimate from typical desk premium sizes, as a
+    // fallback for when nothing better is available yet.
+    const guesses = state.rateEntries.map((re) => {
+      const bfGuess = estimateBigFigureForTenor(re.node, baseBF, state.valueDates.days);
+      const r = parseRateShorthand(re.rate, bfGuess);
+      return { node: re.node, rateStr: re.rate, bid: r.bid, offer: r.offer };
     });
+    const provisionalAnchors = guesses.filter((g) => g.bid !== null || g.offer !== null);
+    const provisional = FXCalculator.solveMarket(edges, provisionalAnchors, state.valueDates);
+    const spotGuess = guesses.find((g) => g.node === 'spot');
+
+    // Pass 2: wherever the premium graph independently connects a forward
+    // tenor back to Spot (regardless of any Big Figure guess), that's a
+    // far more reliable Big Figure than the flat per-day estimate —
+    // re-resolve the same typed shorthand against Spot's real rate plus
+    // that actual premium instead.
+    const anchors = guesses.map((g) => {
+      if (g.node === 'spot' || NEAR_DATES.includes(g.node) || !spotGuess) return g;
+      const provRow = provisional.curve[g.node];
+      const premRel = isNum(provRow.payerPremium) ? provRow.payerPremium : provRow.receiverPremium;
+      if (!isNum(premRel)) return g; // no better info yet — keep the heuristic guess
+      const expected = isNum(spotGuess.bid) ? spotGuess.bid + premRel
+        : isNum(spotGuess.offer) ? spotGuess.offer + premRel : null;
+      if (expected === null) return g;
+      const firstRaw = parseFloat((g.rateStr || '').split('/')[0]);
+      if (!isFinite(firstRaw) || Math.abs(firstRaw) >= 100) return g; // was a full rate, not shorthand
+      const refinedBF = Math.round(expected - firstRaw / 100);
+      const r = parseRateShorthand(g.rateStr, refinedBF);
+      return { node: g.node, rateStr: g.rateStr, bid: r.bid, offer: r.offer };
+    }).filter((g) => g.bid !== null || g.offer !== null);
 
     state.solved = FXCalculator.solveMarket(edges, anchors, state.valueDates);
     state.impliedPremiums = FXCalculator.computeImpliedPremiums(anchors);
