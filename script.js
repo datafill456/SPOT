@@ -482,30 +482,50 @@
       svg += `<text x="${receiverRailX - 6}" y="${midY}" text-anchor="end" dominant-baseline="central" class="ladder-premium">${receiverPrem}</text>`;
     }
 
+    // A straight line for an adjacent pair reads fine sitting on the rail.
+    // But a pair that SKIPS a tenor (Cash->Spot skipping Tom, 1W->1M
+    // skipping 2W) drawn as the same straight line looks like it's just
+    // running past the skipped row rather than jumping over it — so those
+    // get an outward-bulging curve instead, making the skip obvious.
+    function matchPath(fromIdx, toIdx, side) {
+      const lo = Math.min(fromIdx, toIdx);
+      const hi = Math.max(fromIdx, toIdx);
+      const y1 = rowCenterY(lo);
+      const y2 = rowCenterY(hi);
+      const x = side === 'payer' ? matchPayerX : matchReceiverX;
+      const skips = hi - lo > 1;
+      if (!skips) {
+        return { d: `M ${x} ${y1} L ${x} ${y2}`, labelX: x, labelY: (y1 + y2) / 2 };
+      }
+      const bulge = side === 'payer' ? 22 : -22;
+      const cx = x + bulge;
+      const midY = (y1 + y2) / 2;
+      return {
+        d: `M ${x} ${y1} Q ${cx} ${midY} ${x} ${y2}`,
+        labelX: cx, labelY: midY,
+      };
+    }
+
     (matches || []).forEach((m) => {
       const fromIdx = TENORS.indexOf(m.from);
       const toIdx = TENORS.indexOf(m.to);
       if (fromIdx === -1 || toIdx === -1) return;
-      const y1 = rowCenterY(Math.min(fromIdx, toIdx));
-      const y2 = rowCenterY(Math.max(fromIdx, toIdx));
-      const x = m.side === 'payer' ? matchPayerX : matchReceiverX;
       const anchor = m.side === 'payer' ? 'start' : 'end';
-      const labelX = m.side === 'payer' ? x + 6 : x - 6;
-      svg += `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" class="ladder-match-line ladder-match-${m.side}"></line>`;
-      svg += `<text x="${labelX}" y="${(y1 + y2) / 2}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-match-label">✓</text>`;
+      const p = matchPath(fromIdx, toIdx, m.side);
+      const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
+      svg += `<path d="${p.d}" fill="none" class="ladder-match-line ladder-match-${m.side}"></path>`;
+      svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-match-label">✓</text>`;
     });
 
     (mismatches || []).forEach((m) => {
       const fromIdx = TENORS.indexOf(m.from);
       const toIdx = TENORS.indexOf(m.to);
       if (fromIdx === -1 || toIdx === -1) return;
-      const y1 = rowCenterY(Math.min(fromIdx, toIdx));
-      const y2 = rowCenterY(Math.max(fromIdx, toIdx));
-      const x = m.side === 'payer' ? matchPayerX : matchReceiverX;
       const anchor = m.side === 'payer' ? 'start' : 'end';
-      const labelX = m.side === 'payer' ? x + 6 : x - 6;
-      svg += `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" class="ladder-mismatch-line ladder-mismatch-${m.side}"></line>`;
-      svg += `<text x="${labelX}" y="${(y1 + y2) / 2}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-mismatch-label">⚠</text>`;
+      const p = matchPath(fromIdx, toIdx, m.side);
+      const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
+      svg += `<path d="${p.d}" fill="none" class="ladder-mismatch-line ladder-mismatch-${m.side}"></path>`;
+      svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-mismatch-label">⚠</text>`;
     });
 
     svg += `</svg>`;
