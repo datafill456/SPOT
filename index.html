@@ -51,6 +51,7 @@
   .match-payer { color: var(--green, #3ba55d); border-color: var(--green, #3ba55d); background: color-mix(in srgb, var(--green, #3ba55d) 12%, transparent); }
   .match-receiver { color: var(--red, #d9534f); border-color: var(--red, #d9534f); background: color-mix(in srgb, var(--red, #d9534f) 12%, transparent); }
   .mismatch-payer, .mismatch-receiver { color: var(--orange, #d98a3b); border-color: var(--orange, #d98a3b); background: color-mix(in srgb, var(--orange, #d98a3b) 12%, transparent); }
+  .mismatch-big { font-size: 16px; font-weight: 700; padding: 10px 14px; }
 </style>
 </head>
 <body>
@@ -113,6 +114,20 @@
     </div>
     <div class="btn-row" style="margin-top:14px;">
       <button class="btn" id="clearInputsBtn">Clear All Inputs</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Odd / Broken Date <span class="hint">Any custom value date — interpolated between the two nearest solved tenors</span></h2>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="brokenDateTable">
+        <thead><tr><th>Date</th><th>Days from Spot</th><th>Payer Rate</th><th>Receiver Rate</th><th></th></tr></thead>
+        <tbody id="brokenDateTableBody"></tbody>
+      </table>
+    </div>
+    <div class="btn-row" style="margin-top:10px;">
+      <input type="date" id="newBrokenDateInput" class="cell-input" style="width:160px;">
+      <button class="btn" id="addBrokenDateBtn">Add Date</button>
     </div>
   </div>
 
