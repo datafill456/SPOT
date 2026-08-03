@@ -41,6 +41,7 @@
     bigFigure: '',
     rateEntries: [],     // [{ id, node, rate: '30/40' }]
     premiumEntries: [],  // [{ id, from, to, premium: '5/5.5', perDay: bool }]
+    brokenDates: [],     // [{ id, dateStr: 'YYYY-MM-DD' }] — odd/custom tenor dates
     valueDates: null,
     solved: null,
     impliedPremiums: [],
@@ -50,6 +51,7 @@
 
   let nextRateId = 1;
   let nextPremiumId = 1;
+  let nextBrokenDateId = 1;
 
   function todayKey() {
     return FXCalendar.fmt(state.tradeDate);
@@ -216,13 +218,18 @@
         const actualDisplayPts = toDisplayUnit(actualTotalPts);
         const offPts = actualDisplayPts - typedDisplayPts;
         if (Math.abs((toAnchor.bid - fromAnchor.bid) - payerEdge) < TOL) {
-          state.matches.push({ from: pe.from, to: pe.to, side: 'payer' });
+          state.matches.push({ from: pe.from, to: pe.to, side: 'payer', direct: true });
         } else {
+          const suggestedFromRate = toAnchor.bid - payerEdge;
+          const suggestedToRate = fromAnchor.bid + payerEdge;
+          // Only offer a rate suggestion if it wouldn't invert that
+          // tenor's own market (a bid can't end up above its own offer).
+          const fromSuitable = !isNum(fromAnchor.offer) || suggestedFromRate < fromAnchor.offer;
+          const toSuitable = !isNum(toAnchor.offer) || suggestedToRate < toAnchor.offer;
           state.mismatches.push({
-            from: pe.from, to: pe.to, side: 'payer', unitLabel,
+            from: pe.from, to: pe.to, side: 'payer', unitLabel, direct: true,
             typedDisplayPts, actualDisplayPts, offPts,
-            suggestedFromRate: toAnchor.bid - payerEdge,
-            suggestedToRate: fromAnchor.bid + payerEdge,
+            suggestedFromRate, suggestedToRate, fromSuitable, toSuitable,
           });
         }
       }
@@ -232,17 +239,79 @@
         const actualDisplayPts = toDisplayUnit(actualTotalPts);
         const offPts = actualDisplayPts - typedDisplayPts;
         if (Math.abs((toAnchor.offer - fromAnchor.offer) - receiverEdge) < TOL) {
-          state.matches.push({ from: pe.from, to: pe.to, side: 'receiver' });
+          state.matches.push({ from: pe.from, to: pe.to, side: 'receiver', direct: true });
         } else {
+          const suggestedFromRate = toAnchor.offer - receiverEdge;
+          const suggestedToRate = fromAnchor.offer + receiverEdge;
+          const fromSuitable = !isNum(fromAnchor.bid) || suggestedFromRate > fromAnchor.bid;
+          const toSuitable = !isNum(toAnchor.bid) || suggestedToRate > toAnchor.bid;
           state.mismatches.push({
-            from: pe.from, to: pe.to, side: 'receiver', unitLabel,
+            from: pe.from, to: pe.to, side: 'receiver', unitLabel, direct: true,
             typedDisplayPts, actualDisplayPts, offPts,
-            suggestedFromRate: toAnchor.offer - receiverEdge,
-            suggestedToRate: fromAnchor.offer + receiverEdge,
+            suggestedFromRate, suggestedToRate, fromSuitable, toSuitable,
           });
         }
       }
     });
+
+    // Generalized cross-check: ANY two directly-typed Rate Entries that
+    // are connected through the premium graph — even with no single
+    // Premium Entry directly between them, e.g. Cash to 1M via Spot/1W —
+    // get checked against the graph's own chained premium between them.
+    // Pairs that already have a direct Premium Entry are skipped here
+    // since those were just handled above with an editable suggestion.
+    for (let i = 0; i < anchors.length; i++) {
+      for (let j = i + 1; j < anchors.length; j++) {
+        const a = anchors[i];
+        const b = anchors[j];
+        if (a.node === b.node) continue;
+        const hasDirectEntry = state.premiumEntries.some((pe) =>
+          (pe.from === a.node && pe.to === b.node) || (pe.from === b.node && pe.to === a.node));
+        if (hasDirectEntry) continue;
+
+        const idxA = TENORS.indexOf(a.node);
+        const idxB = TENORS.indexOf(b.node);
+        if (idxA === -1 || idxB === -1) continue;
+        const [earlier, later] = idxA < idxB ? [a, b] : [b, a];
+        const rowEarlier = state.solved.curve[earlier.node];
+        const rowLater = state.solved.curve[later.node];
+
+        if (isNum(earlier.bid) && isNum(later.bid) && isNum(rowEarlier.payerPremium) && isNum(rowLater.payerPremium)) {
+          const chainPremium = rowLater.payerPremium - rowEarlier.payerPremium;
+          const actualDiff = later.bid - earlier.bid;
+          if (Math.abs(actualDiff - chainPremium) < TOL) {
+            state.matches.push({ from: earlier.node, to: later.node, side: 'payer', direct: false });
+          } else {
+            const suggestedEarlierRate = later.bid - chainPremium;
+            const suggestedLaterRate = earlier.bid + chainPremium;
+            const earlierSuitable = !isNum(earlier.offer) || suggestedEarlierRate < earlier.offer;
+            const laterSuitable = !isNum(later.offer) || suggestedLaterRate < later.offer;
+            state.mismatches.push({
+              from: earlier.node, to: later.node, side: 'payer', direct: false,
+              suggestedFromRate: suggestedEarlierRate, suggestedToRate: suggestedLaterRate,
+              fromSuitable: earlierSuitable, toSuitable: laterSuitable,
+            });
+          }
+        }
+        if (isNum(earlier.offer) && isNum(later.offer) && isNum(rowEarlier.receiverPremium) && isNum(rowLater.receiverPremium)) {
+          const chainPremium = rowLater.receiverPremium - rowEarlier.receiverPremium;
+          const actualDiff = later.offer - earlier.offer;
+          if (Math.abs(actualDiff - chainPremium) < TOL) {
+            state.matches.push({ from: earlier.node, to: later.node, side: 'receiver', direct: false });
+          } else {
+            const suggestedEarlierRate = later.offer - chainPremium;
+            const suggestedLaterRate = earlier.offer + chainPremium;
+            const earlierSuitable = !isNum(earlier.bid) || suggestedEarlierRate > earlier.bid;
+            const laterSuitable = !isNum(later.bid) || suggestedLaterRate > later.bid;
+            state.mismatches.push({
+              from: earlier.node, to: later.node, side: 'receiver', direct: false,
+              suggestedFromRate: suggestedEarlierRate, suggestedToRate: suggestedLaterRate,
+              fromSuitable: earlierSuitable, toSuitable: laterSuitable,
+            });
+          }
+        }
+      }
+    }
   }
 
   /* ---------------- Draft persistence ---------------- */
@@ -251,12 +320,15 @@
     if (draft && draft.tradeDateKey === todayKey() && draft.rateEntries) {
       state.rateEntries = draft.rateEntries;
       state.premiumEntries = draft.premiumEntries || [];
+      state.brokenDates = draft.brokenDates || [];
       state.bigFigure = draft.bigFigure || '';
       nextRateId = Math.max(1, ...state.rateEntries.map((e) => e.id + 1), 1);
       nextPremiumId = Math.max(1, ...state.premiumEntries.map((e) => e.id + 1), 1);
+      nextBrokenDateId = Math.max(1, ...state.brokenDates.map((e) => e.id + 1), 1);
     } else {
       state.rateEntries = [];
       state.premiumEntries = [];
+      state.brokenDates = [];
     }
   }
 
@@ -268,6 +340,7 @@
         tradeDateKey: todayKey(),
         rateEntries: state.rateEntries,
         premiumEntries: state.premiumEntries,
+        brokenDates: state.brokenDates,
         bigFigure: state.bigFigure,
         pair: state.pair,
       });
@@ -599,7 +672,7 @@
     el.innerHTML = state.matches.map((m) => `
       <div class="match-line match-${m.side}">
         ✓ ${LABELS[m.from]} → ${LABELS[m.to]} <strong>${m.side === 'payer' ? 'Payer' : 'Receiver'}</strong>
-        premium matches your quoted rates exactly.
+        ${m.direct ? 'premium matches your quoted rates exactly.' : 'rates are consistent with the curve (no direct premium entered).'}
       </div>
     `).join('');
   }
@@ -615,17 +688,62 @@
     el.style.display = '';
     el.innerHTML = state.mismatches.map((m) => {
       const sideLabel = m.side === 'payer' ? 'Payer' : 'Receiver';
-      const priceKind = m.side === 'payer' ? 'bid' : 'offer';
+      const fixes = [];
+      if (m.direct) fixes.push(`set the premium to <strong>${fmtTrim(m.actualDisplayPts)}</strong>`);
+      if (m.toSuitable) fixes.push(`set ${LABELS[m.to]} to <strong>${fmtNum(m.suggestedToRate)}</strong>`);
+      if (m.fromSuitable) fixes.push(`set ${LABELS[m.from]} to <strong>${fmtNum(m.suggestedFromRate)}</strong>`);
+      const fixText = fixes.length ? fixes.join(', or ') : "these two rates don't reconcile through the curve";
+      const chainNote = m.direct ? '' : ' <span class="small-text">(via the curve, no direct premium entered)</span>';
       return `
-      <div class="match-line mismatch-${m.side}">
-        ⚠ ${LABELS[m.from]} → ${LABELS[m.to]} <strong>${sideLabel}</strong>:
-        your rates imply ${fmtSigned(m.actualDisplayPts)}${m.unitLabel} but the premium is typed as ${fmtSigned(m.typedDisplayPts)}${m.unitLabel}
-        (off by ${fmtSigned(m.offPts)}${m.unitLabel}). To fix it, do ONE of:
-        set the premium to <strong>${fmtTrim(m.actualDisplayPts)}</strong>,
-        or set ${LABELS[m.to]} ${priceKind} to <strong>${fmtNum(m.suggestedToRate)}</strong>,
-        or set ${LABELS[m.from]} ${priceKind} to <strong>${fmtNum(m.suggestedFromRate)}</strong>.
+      <div class="match-line mismatch-${m.side} mismatch-big">
+        ⚠ ${LABELS[m.from]} → ${LABELS[m.to]} ${sideLabel}: ${fixText}.${chainNote}
       </div>`;
     }).join('');
+  }
+
+  /* ==================================================================
+     RENDER: Odd / Broken Dates (custom value dates, interpolated)
+     ================================================================== */
+  function renderBrokenDates() {
+    const tbody = document.getElementById('brokenDateTableBody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    state.brokenDates
+      .slice()
+      .sort((a, b) => FXCalendar.parse(a.dateStr) - FXCalendar.parse(b.dateStr))
+      .forEach((bd) => {
+        const targetDate = FXCalendar.parse(bd.dateStr);
+        const result = FXCalculator.interpolateBrokenDate(state.solved.curve, targetDate, state.valueDates.spot);
+        const tr = document.createElement('tr');
+        if (!result) {
+          tr.innerHTML = `
+            <td>${fmtDateLabel(targetDate)}</td>
+            <td colspan="3" class="val-muted">Need at least 2 solved tenors to interpolate</td>
+            <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
+          `;
+        } else {
+          const payerRate = isNum(state.solved.payerSpotBid) && isNum(result.payerPremium)
+            ? state.solved.payerSpotBid + result.payerPremium : null;
+          const receiverRate = isNum(state.solved.receiverSpotOffer) && isNum(result.receiverPremium)
+            ? state.solved.receiverSpotOffer + result.receiverPremium : null;
+          tr.innerHTML = `
+            <td>${fmtDateLabel(targetDate)}</td>
+            <td class="mono">${result.days}</td>
+            <td class="mono val-bid">${fmtNum(payerRate)}</td>
+            <td class="mono val-offer">${fmtNum(receiverRate)}</td>
+            <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
+          `;
+        }
+        tbody.appendChild(tr);
+      });
+
+    tbody.querySelectorAll('[data-remove-broken]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.brokenDates = state.brokenDates.filter((e) => e.id !== Number(btn.dataset.removeBroken));
+        renderBrokenDates();
+        scheduleSaveDraft();
+      });
+    });
   }
 
   /* ==================================================================
@@ -664,6 +782,7 @@
     renderQuoteScreen();
     renderSolverStatus();
     renderImpliedPremiums();
+    renderBrokenDates();
   }
 
   /* ==================================================================
@@ -712,10 +831,20 @@
       if (inputs.length) inputs[inputs.length - 1].focus();
     });
 
+    document.getElementById('addBrokenDateBtn').addEventListener('click', () => {
+      const input = document.getElementById('newBrokenDateInput');
+      if (!input.value) { alert('Pick a date first.'); return; }
+      state.brokenDates.push({ id: nextBrokenDateId++, dateStr: input.value });
+      input.value = '';
+      renderBrokenDates();
+      scheduleSaveDraft();
+    });
+
     document.getElementById('clearInputsBtn').addEventListener('click', () => {
       if (!confirm('Clear every input field?')) return;
       state.rateEntries = [];
       state.premiumEntries = [];
+      state.brokenDates = [];
       state.bigFigure = '';
       document.getElementById('bigFigureInput').value = '';
       recompute();
