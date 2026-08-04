@@ -605,10 +605,17 @@
       const payerPremLabel = fmtPremiumPts(c.payerPremium);
       const receiverPremLabel = fmtPremiumPts(c.receiverPremium);
       const diffLabel = fmtDiffPts(displayPayerBid, displayReceiverOffer);
+      // Show the whole-number "Big Figure" actually in use for this
+      // tenor — whichever value is available — so it's obvious at a
+      // glance whether the auto-detected/refined figure looks right,
+      // without having to open Rate Entries to check.
+      const bigFigSource = isNum(displayPayerBid) ? displayPayerBid : displayReceiverOffer;
+      const bigFigLabel = isNum(bigFigSource) ? `BF ${Math.floor(bigFigSource)}` : '';
       const spotClass = t === 'spot' ? ' ladder-row-spot' : '';
       svg += `
         <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
         <text x="${payerX + 8}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
+        <text x="${payerX + 8}" y="${premY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
         <text x="${payerX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid ladder-val-editable" data-tenor="${t}" data-side="payer">${payerVal}</text>
         <text x="${payerX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${payerPremLabel}</text>
 
@@ -616,6 +623,7 @@
 
         <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
         <text x="${receiverX + 8}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
+        <text x="${receiverX + 8}" y="${premY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
         <text x="${receiverX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-offer ladder-val-editable" data-tenor="${t}" data-side="receiver">${receiverVal}</text>
         <text x="${receiverX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${receiverPremLabel}</text>
 
