@@ -152,14 +152,17 @@
 
     const baseBF = parseFloat(state.bigFigure);
 
-    // Pass 1: resolve every Rate Entry with a best-guess Big Figure — Spot
-    // and near-dates use the typed Big Figure unchanged; forward tenors
-    // get a rollover estimate from typical desk premium sizes, as a
-    // fallback for when nothing better is available yet.
+    // Pass 1: resolve every Rate Entry with a best-guess Big Figure —
+    // Spot and near-dates use the typed Big Figure unchanged; forward
+    // tenors get a rollover estimate from typical desk premium sizes, as
+    // a fallback for when nothing better is available yet. A dealer-set
+    // override on that specific Rate Entry always wins over both.
     const guesses = state.rateEntries.map((re) => {
-      const bfGuess = estimateBigFigureForTenor(re.node, baseBF, state.valueDates.days);
+      const override = parseFloat(re.bigFigureOverride);
+      const hasOverride = isFinite(override);
+      const bfGuess = hasOverride ? override : estimateBigFigureForTenor(re.node, baseBF, state.valueDates.days);
       const r = parseRateShorthand(re.rate, bfGuess);
-      return { node: re.node, rateStr: re.rate, bid: r.bid, offer: r.offer };
+      return { node: re.node, rateStr: re.rate, bid: r.bid, offer: r.offer, hasOverride };
     });
     const provisionalAnchors = guesses.filter((g) => g.bid !== null || g.offer !== null);
     const provisional = FXCalculator.solveMarket(edges, provisionalAnchors, state.valueDates);
@@ -169,9 +172,11 @@
     // tenor back to Spot (regardless of any Big Figure guess), that's a
     // far more reliable Big Figure than the flat per-day estimate —
     // re-resolve the same typed shorthand against Spot's real rate plus
-    // that actual premium instead.
+    // that actual premium instead. Skipped entirely for a Rate Entry with
+    // its own explicit override — that's the dealer overruling both
+    // guesses on purpose, so it's never auto-corrected back.
     const anchors = guesses.map((g) => {
-      if (g.node === 'spot' || NEAR_DATES.includes(g.node) || !spotGuess) return g;
+      if (g.hasOverride || g.node === 'spot' || NEAR_DATES.includes(g.node) || !spotGuess) return g;
       const provRow = provisional.curve[g.node];
       const premRel = isNum(provRow.payerPremium) ? provRow.payerPremium : provRow.receiverPremium;
       if (!isNum(premRel)) return g; // no better info yet — keep the heuristic guess
@@ -186,6 +191,14 @@
     }).filter((g) => g.bid !== null || g.offer !== null);
 
     state.solved = FXCalculator.solveMarket(edges, anchors, state.valueDates);
+    // The solver only keeps ONE anchor per connected component (whichever
+    // came first), so a tenor with its OWN directly-typed rate can still
+    // get silently overridden by a value derived from a different
+    // tenor's anchor + the premium chain. Keep the raw typed anchors here
+    // so the ladder can always show what was actually typed for a tenor
+    // that has one, rather than a derived figure the dealer never entered.
+    state.anchorByNode = {};
+    anchors.forEach((a) => { state.anchorByNode[a.node] = a; });
     state.impliedPremiums = FXCalculator.computeImpliedPremiums(anchors);
 
     // Match detection: a Premium Entry "confirms" against the board when
@@ -398,14 +411,15 @@
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td><span class="tenor-name">${LABELS[re.node]}</span><span class="tenor-date">${fmtDateLabel(date)}</span></td>
-        <td><input type="text" class="cell-input shorthand" data-id="${re.id}" placeholder="30/40 or 75/ or /75"></td>
+        <td><input type="text" class="cell-input shorthand" data-rate-id="${re.id}" placeholder="30/40 or 75/ or /75"></td>
+        <td><input type="text" class="cell-input" style="width:70px;" data-bf-id="${re.id}" placeholder="auto"></td>
         <td><button class="btn danger" data-remove-rate="${re.id}" style="padding:3px 8px;">✕</button></td>
       `;
       tbody.appendChild(tr);
     });
 
-    tbody.querySelectorAll('input').forEach((input) => {
-      const id = Number(input.dataset.id);
+    tbody.querySelectorAll('[data-rate-id]').forEach((input) => {
+      const id = Number(input.dataset.rateId);
       const entry = state.rateEntries.find((e) => e.id === id);
       input.value = entry.rate;
       input.addEventListener('input', () => {
@@ -414,7 +428,19 @@
         renderDownstream();
         scheduleSaveDraft();
       });
-      input.addEventListener('keydown', (e) => handleEnterToNext(e, '#rateTableBody input[type="text"]'));
+      input.addEventListener('keydown', (e) => handleEnterToNext(e, '#rateTableBody input[data-rate-id]'));
+    });
+
+    tbody.querySelectorAll('[data-bf-id]').forEach((input) => {
+      const id = Number(input.dataset.bfId);
+      const entry = state.rateEntries.find((e) => e.id === id);
+      input.value = entry.bigFigureOverride || '';
+      input.addEventListener('input', () => {
+        entry.bigFigureOverride = input.value.trim();
+        recompute();
+        renderDownstream();
+        scheduleSaveDraft();
+      });
     });
 
     tbody.querySelectorAll('[data-remove-rate]').forEach((btn) => {
@@ -536,7 +562,7 @@
     return (pts >= 0 ? '+' : '') + fmtTrim(pts);
   }
 
-  function buildLadderSVG(curve, matches, mismatches) {
+  function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
     const n = TENORS.length;
     const rowH = 34;
     const slot = 44;
@@ -566,23 +592,31 @@
       const cy = rowCenterY(i);
       const valY = y + 14;
       const premY = y + 27;
-      const payerVal = fmtRatePairParts(c.payerBid, null)[0];
-      const receiverVal = fmtRatePairParts(null, c.receiverOffer)[1];
+      // A tenor the dealer typed a rate for directly should always show
+      // THAT rate — never a value the solver derived from a different
+      // tenor's anchor sharing the same premium chain (solveMarket only
+      // keeps one anchor per connected component). Any real discrepancy
+      // between them is what the match/mismatch banner is for.
+      const anchor = (anchorByNode || {})[t];
+      const displayPayerBid = isNum(anchor && anchor.bid) ? anchor.bid : c.payerBid;
+      const displayReceiverOffer = isNum(anchor && anchor.offer) ? anchor.offer : c.receiverOffer;
+      const payerVal = fmtRatePairParts(displayPayerBid, null)[0];
+      const receiverVal = fmtRatePairParts(null, displayReceiverOffer)[1];
       const payerPremLabel = fmtPremiumPts(c.payerPremium);
       const receiverPremLabel = fmtPremiumPts(c.receiverPremium);
-      const diffLabel = fmtDiffPts(c.payerBid, c.receiverOffer);
+      const diffLabel = fmtDiffPts(displayPayerBid, displayReceiverOffer);
       const spotClass = t === 'spot' ? ' ladder-row-spot' : '';
       svg += `
         <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
         <text x="${payerX + 8}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
-        <text x="${payerX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid">${payerVal}</text>
+        <text x="${payerX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid ladder-val-editable" data-tenor="${t}" data-side="payer">${payerVal}</text>
         <text x="${payerX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${payerPremLabel}</text>
 
         <text x="${diffX}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-diff">${diffLabel}</text>
 
         <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
         <text x="${receiverX + 8}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
-        <text x="${receiverX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-offer">${receiverVal}</text>
+        <text x="${receiverX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-offer ladder-val-editable" data-tenor="${t}" data-side="receiver">${receiverVal}</text>
         <text x="${receiverX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${receiverPremLabel}</text>
 
         <line x1="${payerX + colW}" y1="${cy}" x2="${payerRailX}" y2="${cy}" class="ladder-tick"></line>
@@ -655,9 +689,82 @@
 
   function renderQuoteScreen() {
     const wrap = document.getElementById('quoteLadderWrap');
-    wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches);
+    wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches, state.anchorByNode);
+    attachLadderEditing(wrap);
     renderMatchBanner();
     renderMismatchBanner();
+  }
+
+  /**
+   * Click any Payer/Receiver value on the ladder to edit it directly.
+   * The edit writes straight back into the matching Rate Entry (creating
+   * one if that tenor didn't have one yet) — so it's a real input, not
+   * just a display, and shows up correctly in Rate Entries and on reload.
+   */
+  function attachLadderEditing(wrap) {
+    wrap.style.position = 'relative';
+    wrap.querySelectorAll('.ladder-val-editable').forEach((el) => {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => openLadderEditor(el, wrap));
+    });
+  }
+
+  function openLadderEditor(targetEl, wrap) {
+    if (wrap.querySelector('.ladder-edit-input')) return; // one editor at a time
+    const tenor = targetEl.dataset.tenor;
+    const side = targetEl.dataset.side;
+    const rect = targetEl.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'cell-input ladder-edit-input';
+    const current = targetEl.textContent.trim();
+    input.value = current === '—' ? '' : current;
+    input.style.position = 'absolute';
+    input.style.left = `${rect.left - wrapRect.left - 60}px`;
+    input.style.top = `${rect.top - wrapRect.top - 4}px`;
+    input.style.width = '70px';
+    input.style.zIndex = '5';
+
+    wrap.appendChild(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    function commit() {
+      if (done) return;
+      done = true;
+      const raw = input.value.trim();
+      input.remove();
+      if (raw) applyLadderEdit(tenor, side, raw);
+    }
+    function cancel() {
+      if (done) return;
+      done = true;
+      input.remove();
+    }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') commit();
+      if (e.key === 'Escape') cancel();
+    });
+    input.addEventListener('blur', commit);
+  }
+
+  function applyLadderEdit(tenor, side, raw) {
+    let entry = state.rateEntries.find((e) => e.node === tenor);
+    if (!entry) {
+      entry = { id: nextRateId++, node: tenor, rate: '' };
+      state.rateEntries.push(entry);
+    }
+    const parts = (entry.rate || '').split('/');
+    const bidPart = (parts[0] || '').trim();
+    const offerPart = (parts.length > 1 ? parts[1] : '').trim();
+    entry.rate = side === 'payer' ? `${raw}/${offerPart}` : `${bidPart}/${raw}`;
+    recompute();
+    renderRateTable();
+    renderDownstream();
+    scheduleSaveDraft();
   }
 
   function renderMatchBanner() {
