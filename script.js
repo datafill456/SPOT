@@ -581,9 +581,8 @@
     const rowY = (i) => topPad + i * slot;
     const rowCenterY = (i) => rowY(i) + rowH / 2;
 
-    let svg = `<svg class="ladder-svg" viewBox="0 0 620 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets and spread">`;
+    let svg = `<svg class="ladder-svg" viewBox="0 0 620 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
     svg += `<text x="${payerX}" y="14" class="ladder-heading">Payer</text>`;
-    svg += `<text x="${diffX}" y="14" text-anchor="middle" class="ladder-heading">Diff</text>`;
     svg += `<text x="${receiverX + colW}" y="14" text-anchor="end" class="ladder-heading">Receiver</text>`;
 
     TENORS.forEach((t, i) => {
@@ -604,7 +603,6 @@
       const receiverVal = fmtRatePairParts(null, displayReceiverOffer)[1];
       const payerPremLabel = fmtPremiumPts(c.payerPremium);
       const receiverPremLabel = fmtPremiumPts(c.receiverPremium);
-      const diffLabel = fmtDiffPts(displayPayerBid, displayReceiverOffer);
       // Show the whole-number "Big Figure" actually in use for this
       // tenor — whichever value is available — so it's obvious at a
       // glance whether the auto-detected/refined figure looks right,
@@ -618,8 +616,6 @@
         <text x="${payerX + 8}" y="${premY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
         <text x="${payerX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid ladder-val-editable" data-tenor="${t}" data-side="payer">${payerVal}</text>
         <text x="${payerX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${payerPremLabel}</text>
-
-        <text x="${diffX}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-diff">${diffLabel}</text>
 
         <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
         <text x="${receiverX + 8}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
@@ -643,6 +639,39 @@
       const receiverPrem = isNum(a.receiverOffer) && isNum(b.receiverOffer) ? fmtTrim((b.receiverOffer - a.receiverOffer) * 100) : '—';
       svg += `<text x="${payerRailX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium">${payerPrem}</text>`;
       svg += `<text x="${receiverRailX - 6}" y="${midY}" text-anchor="end" dominant-baseline="central" class="ladder-premium">${receiverPrem}</text>`;
+    }
+
+    // Between the two nearest tenors that BOTH have a directly-typed rate
+    // (however far apart — e.g. Spot to 1M with 1W/2W still blank), show
+    // the actual premium implied by those two typed rates: total points
+    // and per-day, split into Payer (bid) and Receiver (offer), in the
+    // gap between them — this is what replaces the old blue Diff figure.
+    const anchoredOrder = TENORS.filter((t) => {
+      const a = (anchorByNode || {})[t];
+      return a && (isNum(a.bid) || isNum(a.offer));
+    });
+    for (let k = 0; k < anchoredOrder.length - 1; k++) {
+      const aNode = anchoredOrder[k];
+      const bNode = anchoredOrder[k + 1];
+      const aIdx = TENORS.indexOf(aNode);
+      const bIdx = TENORS.indexOf(bNode);
+      const a = anchorByNode[aNode];
+      const b = anchorByNode[bNode];
+      const days = state.valueDates.days[bNode] - state.valueDates.days[aNode];
+      const midY = (rowCenterY(aIdx) + rowCenterY(bIdx)) / 2;
+
+      if (isNum(a.bid) && isNum(b.bid)) {
+        const totalPts = (b.bid - a.bid) * 100;
+        const perDay = days !== 0 ? totalPts / days : null;
+        const label = `Payer ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/day)` : ''}`;
+        svg += `<text x="${diffX}" y="${midY - 8}" text-anchor="middle" class="ladder-implied-payer">${label}</text>`;
+      }
+      if (isNum(a.offer) && isNum(b.offer)) {
+        const totalPts = (b.offer - a.offer) * 100;
+        const perDay = days !== 0 ? totalPts / days : null;
+        const label = `Receiver ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/day)` : ''}`;
+        svg += `<text x="${diffX}" y="${midY + 8}" text-anchor="middle" class="ladder-implied-receiver">${label}</text>`;
+      }
     }
 
     // A straight line for an adjacent pair reads fine sitting on the rail.
