@@ -698,6 +698,46 @@
       };
     }
 
+    // Every OTHER pair of directly-typed rates beyond the consecutive
+    // chain above — e.g. Cash to 1M, skipping over Spot — gets its own
+    // relation curve too, so ALL typed tenors end up linked to each
+    // other, not just neighbors. Drawn as a distinct dashed, non-animated
+    // curve (not the flowing green "confirmed" or pulsing orange
+    // "mismatch" style — this is purely informational, nothing to
+    // confirm against) so it reads instantly as a different kind of line.
+    for (let i = 0; i < anchoredOrder.length; i++) {
+      for (let j = i + 2; j < anchoredOrder.length; j++) {
+        const aNode = anchoredOrder[i];
+        const bNode = anchoredOrder[j];
+        const aIdx = TENORS.indexOf(aNode);
+        const bIdx = TENORS.indexOf(bNode);
+        const a = anchorByNode[aNode];
+        const b = anchorByNode[bNode];
+        const days = state.valueDates.days[bNode] - state.valueDates.days[aNode];
+        const pPayer = matchPath(aIdx, bIdx, 'payer');
+        const pReceiver = matchPath(aIdx, bIdx, 'receiver');
+
+        const alreadyCovered = (side) =>
+          (matches || []).some((m) => m.side === side && ((m.from === aNode && m.to === bNode) || (m.from === bNode && m.to === aNode))) ||
+          (mismatches || []).some((m) => m.side === side && ((m.from === aNode && m.to === bNode) || (m.from === bNode && m.to === aNode)));
+
+        if (isNum(a.bid) && isNum(b.bid) && !alreadyCovered('payer')) {
+          const totalPts = (b.bid - a.bid) * 100;
+          const perDay = days !== 0 ? totalPts / days : null;
+          const label = `${LABELS[aNode]}→${LABELS[bNode]} Payer ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
+          svg += `<path d="${pPayer.d}" fill="none" class="ladder-relation-line"></path>`;
+          svg += `<text x="${pPayer.labelX + 6}" y="${pPayer.labelY}" dominant-baseline="central" class="ladder-relation-label ladder-implied-payer">${label}</text>`;
+        }
+        if (isNum(a.offer) && isNum(b.offer) && !alreadyCovered('receiver')) {
+          const totalPts = (b.offer - a.offer) * 100;
+          const perDay = days !== 0 ? totalPts / days : null;
+          const label = `${LABELS[aNode]}→${LABELS[bNode]} Receiver ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
+          svg += `<path d="${pReceiver.d}" fill="none" class="ladder-relation-line"></path>`;
+          svg += `<text x="${pReceiver.labelX - 6}" y="${pReceiver.labelY}" text-anchor="end" dominant-baseline="central" class="ladder-relation-label ladder-implied-receiver">${label}</text>`;
+        }
+      }
+    }
+
     (matches || []).forEach((m) => {
       const fromIdx = TENORS.indexOf(m.from);
       const toIdx = TENORS.indexOf(m.to);
