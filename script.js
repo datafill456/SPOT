@@ -42,6 +42,7 @@
     rateEntries: [],     // [{ id, node, rate: '30/40' }]
     premiumEntries: [],  // [{ id, from, to, premium: '5/5.5', perDay: bool }]
     brokenDates: [],     // [{ id, dateStr: 'YYYY-MM-DD' }] — odd/custom tenor dates
+    activeRelationTenor: null, // which tenor's relation curves are shown on the ladder, if any
     valueDates: null,
     solved: null,
     impliedPremiums: [],
@@ -565,7 +566,7 @@
     return (pts >= 0 ? '+' : '') + fmtTrim(pts);
   }
 
-  function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
+  function buildLadderSVG(curve, matches, mismatches, anchorByNode, activeTenor) {
     const n = TENORS.length;
     const rowH = 34;
     const slot = 44;
@@ -628,6 +629,8 @@
 
         <line x1="${payerX + colW}" y1="${cy}" x2="${payerRailX}" y2="${cy}" class="ladder-tick"></line>
         <line x1="${receiverRailX}" y1="${cy}" x2="${receiverX}" y2="${cy}" class="ladder-tick"></line>
+        <circle cx="${(payerRailX + receiverRailX) / 2}" cy="${cy}" r="7" class="ladder-relations-btn${t === activeTenor ? ' active' : ''}" data-tenor="${t}"></circle>
+        <text x="${(payerRailX + receiverRailX) / 2}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-relations-glyph" pointer-events="none">🔗</text>
       `;
     });
 
@@ -668,27 +671,60 @@
       };
     }
 
-    (matches || []).forEach((m) => {
-      const fromIdx = TENORS.indexOf(m.from);
-      const toIdx = TENORS.indexOf(m.to);
-      if (fromIdx === -1 || toIdx === -1) return;
-      const anchor = m.side === 'payer' ? 'start' : 'end';
-      const p = matchPath(fromIdx, toIdx, m.side);
-      const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
-      svg += `<path d="${p.d}" fill="none" class="ladder-match-line ladder-match-${m.side}"></path>`;
-      svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-match-label">✓</text>`;
-    });
+    // A straight line for an adjacent pair reads fine sitting on the rail.
+    // But a pair that SKIPS a tenor (Cash->Spot skipping Tom, 1W->1M
+    // skipping 2W) drawn as the same straight line looks like it's just
+    // running past the skipped row rather than jumping over it — so those
+    // get an outward-bulging curve instead, making the skip obvious.
+    function matchPath(fromIdx, toIdx, side) {
+      const lo = Math.min(fromIdx, toIdx);
+      const hi = Math.max(fromIdx, toIdx);
+      const y1 = rowCenterY(lo);
+      const y2 = rowCenterY(hi);
+      const x = side === 'payer' ? matchPayerX : matchReceiverX;
+      const skips = hi - lo > 1;
+      if (!skips) {
+        return { d: `M ${x} ${y1} L ${x} ${y2}`, labelX: x, labelY: (y1 + y2) / 2 };
+      }
+      const bulge = side === 'payer' ? 22 : -22;
+      const cx = x + bulge;
+      const midY = (y1 + y2) / 2;
+      return {
+        d: `M ${x} ${y1} Q ${cx} ${midY} ${x} ${y2}`,
+        labelX: cx, labelY: midY,
+      };
+    }
 
-    (mismatches || []).forEach((m) => {
-      const fromIdx = TENORS.indexOf(m.from);
-      const toIdx = TENORS.indexOf(m.to);
-      if (fromIdx === -1 || toIdx === -1) return;
-      const anchor = m.side === 'payer' ? 'start' : 'end';
-      const p = matchPath(fromIdx, toIdx, m.side);
-      const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
-      svg += `<path d="${p.d}" fill="none" class="ladder-mismatch-line ladder-mismatch-${m.side}"></path>`;
-      svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-mismatch-label">⚠</text>`;
-    });
+    // Curves are drawn ONLY for the tenor the dealer has clicked the 🔗
+    // button on (activeTenor) — showing every relation at once was the
+    // cluttered, unreadable mess from before. One tenor at a time keeps
+    // it readable, and the labels now include the actual From→To names
+    // since there's finally room to show them without collisions.
+    if (activeTenor) {
+      const involves = (m) => m.from === activeTenor || m.to === activeTenor;
+      (matches || []).filter(involves).forEach((m) => {
+        const fromIdx = TENORS.indexOf(m.from);
+        const toIdx = TENORS.indexOf(m.to);
+        if (fromIdx === -1 || toIdx === -1) return;
+        const anchor = m.side === 'payer' ? 'start' : 'end';
+        const p = matchPath(fromIdx, toIdx, m.side);
+        const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
+        const label = `✓ ${LABELS[m.from]}→${LABELS[m.to]} ${m.side === 'payer' ? 'Payer' : 'Receiver'}`;
+        svg += `<path d="${p.d}" fill="none" class="ladder-match-line ladder-match-${m.side}"></path>`;
+        svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-match-label">${label}</text>`;
+      });
+      (mismatches || []).filter(involves).forEach((m) => {
+        const fromIdx = TENORS.indexOf(m.from);
+        const toIdx = TENORS.indexOf(m.to);
+        if (fromIdx === -1 || toIdx === -1) return;
+        const anchor = m.side === 'payer' ? 'start' : 'end';
+        const p = matchPath(fromIdx, toIdx, m.side);
+        const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
+        const label = `⚠ ${LABELS[m.from]}→${LABELS[m.to]} ${m.side === 'payer' ? 'Payer' : 'Receiver'}`;
+        svg += `<path d="${p.d}" fill="none" class="ladder-mismatch-line ladder-mismatch-${m.side}"></path>`;
+        svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-mismatch-label">${label}</text>`;
+      });
+    }
 
     svg += `</svg>`;
     return svg;
@@ -696,7 +732,7 @@
 
   function renderQuoteScreen() {
     const wrap = document.getElementById('quoteLadderWrap');
-    wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches, state.anchorByNode);
+    wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches, state.anchorByNode, state.activeRelationTenor);
     attachLadderEditing(wrap);
     renderMatchBanner();
     renderMismatchBanner();
@@ -707,12 +743,23 @@
    * The edit writes straight back into the matching Rate Entry (creating
    * one if that tenor didn't have one yet) — so it's a real input, not
    * just a display, and shows up correctly in Rate Entries and on reload.
+   * Also wires the 🔗 relations button on each row — click it to show
+   * (and re-click to hide) just that tenor's match/mismatch curves,
+   * instead of every relation being drawn at once.
    */
   function attachLadderEditing(wrap) {
     wrap.style.position = 'relative';
     wrap.querySelectorAll('.ladder-val-editable').forEach((el) => {
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => openLadderEditor(el, wrap));
+    });
+    wrap.querySelectorAll('.ladder-relations-btn').forEach((el) => {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => {
+        const tenor = el.dataset.tenor;
+        state.activeRelationTenor = state.activeRelationTenor === tenor ? null : tenor;
+        renderQuoteScreen();
+      });
     });
   }
 
