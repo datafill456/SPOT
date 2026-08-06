@@ -38,8 +38,15 @@
   }
   .ladder-match-payer { stroke: var(--green, #3ba55d); }
   .ladder-match-receiver { stroke: var(--red, #d9534f); }
-  .ladder-match-label { font-size: 11px; font-weight: 700; }
+  .ladder-match-label { font-size: 10px; font-weight: 700; }
   @keyframes ladderFlow { to { stroke-dashoffset: -24; } }
+  .ladder-relations-btn {
+    fill: var(--panel-raised, #151b25);
+    stroke: var(--border-strong, #3a4657);
+    stroke-width: 1;
+  }
+  .ladder-relations-btn.active { fill: var(--amber, #ffb020); stroke: var(--amber, #ffb020); }
+  .ladder-relations-glyph { font-size: 8px; }
   .ladder-mismatch-line {
     stroke: var(--orange, #d98a3b);
     stroke-width: 3;
@@ -47,7 +54,7 @@
     stroke-dasharray: 3 5;
     animation: ladderPulse 1s ease-in-out infinite;
   }
-  .ladder-mismatch-label { font-size: 11px; font-weight: 700; fill: var(--orange, #d98a3b); }
+  .ladder-mismatch-label { font-size: 10px; font-weight: 700; fill: var(--orange, #d98a3b); }
   @keyframes ladderPulse { 50% { opacity: 0.2; } }
   #matchBanner, #mismatchBanner { margin-bottom: 10px; }
   .match-line {
