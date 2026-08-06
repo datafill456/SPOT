@@ -641,39 +641,6 @@
       svg += `<text x="${receiverRailX - 6}" y="${midY}" text-anchor="end" dominant-baseline="central" class="ladder-premium">${receiverPrem}</text>`;
     }
 
-    // Between the two nearest tenors that BOTH have a directly-typed rate
-    // (however far apart — e.g. Spot to 1M with 1W/2W still blank), show
-    // the actual premium implied by those two typed rates: total points
-    // and per-day, split into Payer (bid) and Receiver (offer), in the
-    // gap between them — this is what replaces the old blue Diff figure.
-    const anchoredOrder = TENORS.filter((t) => {
-      const a = (anchorByNode || {})[t];
-      return a && (isNum(a.bid) || isNum(a.offer));
-    });
-    for (let k = 0; k < anchoredOrder.length - 1; k++) {
-      const aNode = anchoredOrder[k];
-      const bNode = anchoredOrder[k + 1];
-      const aIdx = TENORS.indexOf(aNode);
-      const bIdx = TENORS.indexOf(bNode);
-      const a = anchorByNode[aNode];
-      const b = anchorByNode[bNode];
-      const days = state.valueDates.days[bNode] - state.valueDates.days[aNode];
-      const midY = (rowCenterY(aIdx) + rowCenterY(bIdx)) / 2;
-
-      if (isNum(a.bid) && isNum(b.bid)) {
-        const totalPts = (b.bid - a.bid) * 100;
-        const perDay = days !== 0 ? totalPts / days : null;
-        const label = `Payer ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/day)` : ''}`;
-        svg += `<text x="${diffX}" y="${midY - 8}" text-anchor="middle" class="ladder-implied-payer">${label}</text>`;
-      }
-      if (isNum(a.offer) && isNum(b.offer)) {
-        const totalPts = (b.offer - a.offer) * 100;
-        const perDay = days !== 0 ? totalPts / days : null;
-        const label = `Receiver ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/day)` : ''}`;
-        svg += `<text x="${diffX}" y="${midY + 8}" text-anchor="middle" class="ladder-implied-receiver">${label}</text>`;
-      }
-    }
-
     // A straight line for an adjacent pair reads fine sitting on the rail.
     // But a pair that SKIPS a tenor (Cash->Spot skipping Tom, 1W->1M
     // skipping 2W) drawn as the same straight line looks like it's just
@@ -696,46 +663,6 @@
         d: `M ${x} ${y1} Q ${cx} ${midY} ${x} ${y2}`,
         labelX: cx, labelY: midY,
       };
-    }
-
-    // Every OTHER pair of directly-typed rates beyond the consecutive
-    // chain above — e.g. Cash to 1M, skipping over Spot — gets its own
-    // relation curve too, so ALL typed tenors end up linked to each
-    // other, not just neighbors. Drawn as a distinct dashed, non-animated
-    // curve (not the flowing green "confirmed" or pulsing orange
-    // "mismatch" style — this is purely informational, nothing to
-    // confirm against) so it reads instantly as a different kind of line.
-    for (let i = 0; i < anchoredOrder.length; i++) {
-      for (let j = i + 2; j < anchoredOrder.length; j++) {
-        const aNode = anchoredOrder[i];
-        const bNode = anchoredOrder[j];
-        const aIdx = TENORS.indexOf(aNode);
-        const bIdx = TENORS.indexOf(bNode);
-        const a = anchorByNode[aNode];
-        const b = anchorByNode[bNode];
-        const days = state.valueDates.days[bNode] - state.valueDates.days[aNode];
-        const pPayer = matchPath(aIdx, bIdx, 'payer');
-        const pReceiver = matchPath(aIdx, bIdx, 'receiver');
-
-        const alreadyCovered = (side) =>
-          (matches || []).some((m) => m.side === side && ((m.from === aNode && m.to === bNode) || (m.from === bNode && m.to === aNode))) ||
-          (mismatches || []).some((m) => m.side === side && ((m.from === aNode && m.to === bNode) || (m.from === bNode && m.to === aNode)));
-
-        if (isNum(a.bid) && isNum(b.bid) && !alreadyCovered('payer')) {
-          const totalPts = (b.bid - a.bid) * 100;
-          const perDay = days !== 0 ? totalPts / days : null;
-          const label = `${LABELS[aNode]}→${LABELS[bNode]} Payer ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
-          svg += `<path d="${pPayer.d}" fill="none" class="ladder-relation-line"></path>`;
-          svg += `<text x="${pPayer.labelX + 6}" y="${pPayer.labelY}" dominant-baseline="central" class="ladder-relation-label ladder-implied-payer">${label}</text>`;
-        }
-        if (isNum(a.offer) && isNum(b.offer) && !alreadyCovered('receiver')) {
-          const totalPts = (b.offer - a.offer) * 100;
-          const perDay = days !== 0 ? totalPts / days : null;
-          const label = `${LABELS[aNode]}→${LABELS[bNode]} Receiver ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
-          svg += `<path d="${pReceiver.d}" fill="none" class="ladder-relation-line"></path>`;
-          svg += `<text x="${pReceiver.labelX - 6}" y="${pReceiver.labelY}" text-anchor="end" dominant-baseline="central" class="ladder-relation-label ladder-implied-receiver">${label}</text>`;
-        }
-      }
     }
 
     (matches || []).forEach((m) => {
@@ -941,13 +868,22 @@
       return;
     }
     card.style.display = '';
-    tbody.innerHTML = state.impliedPremiums.map((ip) => `
+    tbody.innerHTML = state.impliedPremiums.map((ip) => {
+      const days = state.valueDates.days[ip.to] - state.valueDates.days[ip.from];
+      const payerPts = ip.payerPremium * 100;
+      const receiverPts = ip.receiverPremium * 100;
+      const payerPerDay = days !== 0 ? payerPts / days : null;
+      const receiverPerDay = days !== 0 ? receiverPts / days : null;
+      return `
       <tr>
         <td class="tenor-name">${LABELS[ip.from]} → ${LABELS[ip.to]}</td>
-        <td class="mono val-bid">${fmtSigned(ip.payerPremium)}</td>
-        <td class="mono val-offer">${fmtSigned(ip.receiverPremium)}</td>
+        <td class="mono val-bid">${fmtSigned(payerPts)}</td>
+        <td class="mono val-bid">${payerPerDay !== null ? fmtSigned(payerPerDay) : '—'}</td>
+        <td class="mono val-offer">${fmtSigned(receiverPts)}</td>
+        <td class="mono val-offer">${receiverPerDay !== null ? fmtSigned(receiverPerDay) : '—'}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   }
 
   /* ==================================================================
