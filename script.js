@@ -58,6 +58,9 @@
   }
 
   function isNum(v) { return typeof v === 'number' && !Number.isNaN(v); }
+  function roundsToSame(a, b, dp = 2) {
+    return isNum(a) && isNum(b) && a.toFixed(dp) === b.toFixed(dp);
+  }
 
   /* ---------------- Shorthand parsing ---------------- */
 
@@ -205,7 +208,7 @@
     // BOTH its endpoints also have a directly-typed Rate Entry (not a
     // derived value) and that typed difference agrees with the typed
     // premium, within a small rounding tolerance.
-    const TOL = 0.0009; // ~0.09 points
+    const TOL = 0.005; // half a point — rates display to 2dp (1pt precision), so anything tighter than this is just rounding noise, not a real mismatch
     state.matches = [];
     state.mismatches = [];
     state.premiumEntries.forEach((pe) => {
@@ -237,8 +240,8 @@
           const suggestedToRate = fromAnchor.bid + payerEdge;
           // Only offer a rate suggestion if it wouldn't invert that
           // tenor's own market (a bid can't end up above its own offer).
-          const fromSuitable = !isNum(fromAnchor.offer) || suggestedFromRate < fromAnchor.offer;
-          const toSuitable = !isNum(toAnchor.offer) || suggestedToRate < toAnchor.offer;
+          const fromSuitable = (!isNum(fromAnchor.offer) || suggestedFromRate < fromAnchor.offer) && !roundsToSame(suggestedFromRate, fromAnchor.bid);
+          const toSuitable = (!isNum(toAnchor.offer) || suggestedToRate < toAnchor.offer) && !roundsToSame(suggestedToRate, toAnchor.bid);
           state.mismatches.push({
             from: pe.from, to: pe.to, side: 'payer', unitLabel, direct: true,
             typedDisplayPts, actualDisplayPts, offPts,
@@ -256,8 +259,8 @@
         } else {
           const suggestedFromRate = toAnchor.offer - receiverEdge;
           const suggestedToRate = fromAnchor.offer + receiverEdge;
-          const fromSuitable = !isNum(fromAnchor.bid) || suggestedFromRate > fromAnchor.bid;
-          const toSuitable = !isNum(toAnchor.bid) || suggestedToRate > toAnchor.bid;
+          const fromSuitable = (!isNum(fromAnchor.bid) || suggestedFromRate > fromAnchor.bid) && !roundsToSame(suggestedFromRate, fromAnchor.offer);
+          const toSuitable = (!isNum(toAnchor.bid) || suggestedToRate > toAnchor.bid) && !roundsToSame(suggestedToRate, toAnchor.offer);
           state.mismatches.push({
             from: pe.from, to: pe.to, side: 'receiver', unitLabel, direct: true,
             typedDisplayPts, actualDisplayPts, offPts,
@@ -297,8 +300,8 @@
           } else {
             const suggestedEarlierRate = later.bid - chainPremium;
             const suggestedLaterRate = earlier.bid + chainPremium;
-            const earlierSuitable = !isNum(earlier.offer) || suggestedEarlierRate < earlier.offer;
-            const laterSuitable = !isNum(later.offer) || suggestedLaterRate < later.offer;
+            const earlierSuitable = (!isNum(earlier.offer) || suggestedEarlierRate < earlier.offer) && !roundsToSame(suggestedEarlierRate, earlier.bid);
+            const laterSuitable = (!isNum(later.offer) || suggestedLaterRate < later.offer) && !roundsToSame(suggestedLaterRate, later.bid);
             state.mismatches.push({
               from: earlier.node, to: later.node, side: 'payer', direct: false,
               suggestedFromRate: suggestedEarlierRate, suggestedToRate: suggestedLaterRate,
@@ -314,8 +317,8 @@
           } else {
             const suggestedEarlierRate = later.offer - chainPremium;
             const suggestedLaterRate = earlier.offer + chainPremium;
-            const earlierSuitable = !isNum(earlier.bid) || suggestedEarlierRate > earlier.bid;
-            const laterSuitable = !isNum(later.bid) || suggestedLaterRate > later.bid;
+            const earlierSuitable = (!isNum(earlier.bid) || suggestedEarlierRate > earlier.bid) && !roundsToSame(suggestedEarlierRate, earlier.offer);
+            const laterSuitable = (!isNum(later.bid) || suggestedLaterRate > later.bid) && !roundsToSame(suggestedLaterRate, later.offer);
             state.mismatches.push({
               from: earlier.node, to: later.node, side: 'receiver', direct: false,
               suggestedFromRate: suggestedEarlierRate, suggestedToRate: suggestedLaterRate,
