@@ -43,6 +43,7 @@
     premiumEntries: [],  // [{ id, from, to, premium: '5/5.5', perDay: bool }]
     brokenDates: [],     // [{ id, dateStr: 'YYYY-MM-DD' }] — odd/custom tenor dates
     activeRelationTenor: null, // which tenor's relation curves are shown on the ladder, if any
+    valueDateOverrides: {}, // { tenor: 'YYYY-MM-DD' } — manual correction if the computed date is wrong
     valueDates: null,
     solved: null,
     impliedPremiums: [],
@@ -143,6 +144,21 @@
   /* ---------------- Solve ---------------- */
   function recompute() {
     state.valueDates = FXCalculator.buildValueDates(state.tradeDate);
+
+    // Manual correction for any tenor whose computed date is wrong (a
+    // missing holiday, an edge case in the roll convention, etc.) —
+    // everything downstream reads dates/days straight off this map, so
+    // overriding here is enough to correct premium math too.
+    Object.keys(state.valueDateOverrides).forEach((t) => {
+      const iso = state.valueDateOverrides[t];
+      if (!iso || !state.valueDates.dates[t]) return;
+      const d = FXCalendar.parse(iso);
+      state.valueDates.dates[t] = d;
+      state.valueDates.days[t] = FXCalendar.calendarDaysBetween(state.valueDates.spot, d);
+      if (t === 'spot') state.valueDates.spot = d;
+      if (t === 'cash') state.valueDates.cash = d;
+      if (t === 'tom') state.valueDates.tom = d;
+    });
 
     const edges = [];
     state.premiumEntries.forEach((pe) => {
@@ -338,6 +354,7 @@
       state.rateEntries = draft.rateEntries;
       state.premiumEntries = draft.premiumEntries || [];
       state.brokenDates = draft.brokenDates || [];
+      state.valueDateOverrides = draft.valueDateOverrides || {};
       state.bigFigure = draft.bigFigure || '';
       nextRateId = Math.max(1, ...state.rateEntries.map((e) => e.id + 1), 1);
       nextPremiumId = Math.max(1, ...state.premiumEntries.map((e) => e.id + 1), 1);
@@ -346,6 +363,7 @@
       state.rateEntries = [];
       state.premiumEntries = [];
       state.brokenDates = [];
+      state.valueDateOverrides = {};
     }
   }
 
@@ -358,6 +376,7 @@
         rateEntries: state.rateEntries,
         premiumEntries: state.premiumEntries,
         brokenDates: state.brokenDates,
+        valueDateOverrides: state.valueDateOverrides,
         bigFigure: state.bigFigure,
         pair: state.pair,
       });
@@ -697,9 +716,10 @@
 
     // Curves are drawn ONLY for the tenor the dealer has clicked the 🔗
     // button on (activeTenor) — showing every relation at once was the
-    // cluttered, unreadable mess from before. One tenor at a time keeps
-    // it readable, and the labels now include the actual From→To names
-    // since there's finally room to show them without collisions.
+    // cluttered, unreadable mess from before. Just the curve and a small
+    // ✓/⚠ icon here — the full "Cash→3 Months Receiver" description
+    // already lives in the match/mismatch banners above, so it doesn't
+    // need to be repeated as floating text on the curve itself.
     if (activeTenor) {
       const involves = (m) => m.from === activeTenor || m.to === activeTenor;
       (matches || []).filter(involves).forEach((m) => {
@@ -709,9 +729,8 @@
         const anchor = m.side === 'payer' ? 'start' : 'end';
         const p = matchPath(fromIdx, toIdx, m.side);
         const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
-        const label = `✓ ${LABELS[m.from]}→${LABELS[m.to]} ${m.side === 'payer' ? 'Payer' : 'Receiver'}`;
         svg += `<path d="${p.d}" fill="none" class="ladder-match-line ladder-match-${m.side}"></path>`;
-        svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-match-label">${label}</text>`;
+        svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-match-label">✓</text>`;
       });
       (mismatches || []).filter(involves).forEach((m) => {
         const fromIdx = TENORS.indexOf(m.from);
@@ -720,9 +739,8 @@
         const anchor = m.side === 'payer' ? 'start' : 'end';
         const p = matchPath(fromIdx, toIdx, m.side);
         const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
-        const label = `⚠ ${LABELS[m.from]}→${LABELS[m.to]} ${m.side === 'payer' ? 'Payer' : 'Receiver'}`;
         svg += `<path d="${p.d}" fill="none" class="ladder-mismatch-line ladder-mismatch-${m.side}"></path>`;
-        svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-mismatch-label">${label}</text>`;
+        svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-mismatch-label">⚠</text>`;
       });
     }
 
@@ -876,9 +894,10 @@
         const targetDate = FXCalendar.parse(bd.dateStr);
         const result = FXCalculator.interpolateBrokenDate(state.solved.curve, targetDate, state.valueDates.spot);
         const tr = document.createElement('tr');
+        const dateInputCell = `<td><input type="date" class="cell-input" style="width:150px;" data-broken-date-id="${bd.id}" value="${bd.dateStr}"></td>`;
         if (!result) {
           tr.innerHTML = `
-            <td>${fmtDateLabel(targetDate)}</td>
+            ${dateInputCell}
             <td colspan="3" class="val-muted">Need at least 2 solved tenors to interpolate</td>
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
@@ -888,7 +907,7 @@
           const receiverRate = isNum(state.solved.receiverSpotOffer) && isNum(result.receiverPremium)
             ? state.solved.receiverSpotOffer + result.receiverPremium : null;
           tr.innerHTML = `
-            <td>${fmtDateLabel(targetDate)}</td>
+            ${dateInputCell}
             <td class="mono">${result.days}</td>
             <td class="mono val-bid">${fmtNum(payerRate)}</td>
             <td class="mono val-offer">${fmtNum(receiverRate)}</td>
@@ -897,6 +916,17 @@
         }
         tbody.appendChild(tr);
       });
+
+    tbody.querySelectorAll('[data-broken-date-id]').forEach((input) => {
+      input.addEventListener('change', () => {
+        const entry = state.brokenDates.find((e) => e.id === Number(input.dataset.brokenDateId));
+        if (entry && input.value) {
+          entry.dateStr = input.value;
+          renderBrokenDates();
+          scheduleSaveDraft();
+        }
+      });
+    });
 
     tbody.querySelectorAll('[data-remove-broken]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -908,28 +938,87 @@
   }
 
   /* ==================================================================
+     RENDER: Value Dates (computed dates for every standard tenor, with
+     a manual override for whenever the calendar engine gets one wrong)
+     ================================================================== */
+  function renderValueDates() {
+    const tbody = document.getElementById('valueDateTableBody');
+    if (!tbody) return;
+    tbody.innerHTML = TENORS.map((t) => {
+      const d = state.valueDates.dates[t];
+      return `
+        <tr>
+          <td class="tenor-name">${LABELS[t]}</td>
+          <td class="mono">${d ? fmtDateLabel(d) : '—'}</td>
+          <td><input type="date" class="cell-input" style="width:150px;" data-value-date-tenor="${t}" value="${state.valueDateOverrides[t] || ''}"></td>
+        </tr>
+      `;
+    }).join('');
+
+    tbody.querySelectorAll('[data-value-date-tenor]').forEach((input) => {
+      input.addEventListener('change', () => {
+        const t = input.dataset.valueDateTenor;
+        if (input.value) {
+          state.valueDateOverrides[t] = input.value;
+        } else {
+          delete state.valueDateOverrides[t];
+        }
+        recompute();
+        renderRateTable();
+        renderPremiumTable();
+        renderDownstream();
+        renderValueDates();
+        scheduleSaveDraft();
+      });
+    });
+  }
+
+  /* ==================================================================
      RENDER: Implied Premiums (from 2+ direct rates)
      ================================================================== */
+  function buildTenorRelations() {
+    const orderedNodes = TENORS.filter((t) => {
+      const a = state.anchorByNode[t];
+      return a && (isNum(a.bid) || isNum(a.offer));
+    });
+    const relations = [];
+    for (let i = 0; i < orderedNodes.length; i++) {
+      for (let j = i + 1; j < orderedNodes.length; j++) {
+        const from = orderedNodes[i];
+        const to = orderedNodes[j];
+        const a = state.anchorByNode[from];
+        const b = state.anchorByNode[to];
+        const payerPremium = isNum(a.bid) && isNum(b.bid) ? b.bid - a.bid : null;
+        const receiverPremium = isNum(a.offer) && isNum(b.offer) ? b.offer - a.offer : null;
+        if (payerPremium !== null || receiverPremium !== null) {
+          relations.push({ from, to, payerPremium, receiverPremium });
+        }
+      }
+    }
+    return relations;
+  }
+
   function renderImpliedPremiums() {
     const card = document.getElementById('impliedCard');
     const tbody = document.getElementById('impliedTableBody');
-    if (!state.impliedPremiums.length) {
+    const relations = buildTenorRelations();
+    if (!relations.length) {
       card.style.display = 'none';
       return;
     }
     card.style.display = '';
-    tbody.innerHTML = state.impliedPremiums.map((ip) => {
+    tbody.innerHTML = relations.map((ip) => {
       const days = state.valueDates.days[ip.to] - state.valueDates.days[ip.from];
-      const payerPts = ip.payerPremium * 100;
-      const receiverPts = ip.receiverPremium * 100;
-      const payerPerDay = days !== 0 ? payerPts / days : null;
-      const receiverPerDay = days !== 0 ? receiverPts / days : null;
+      const payerPts = isNum(ip.payerPremium) ? ip.payerPremium * 100 : null;
+      const receiverPts = isNum(ip.receiverPremium) ? ip.receiverPremium * 100 : null;
+      const payerPerDay = payerPts !== null && days !== 0 ? payerPts / days : null;
+      const receiverPerDay = receiverPts !== null && days !== 0 ? receiverPts / days : null;
       return `
       <tr>
         <td class="tenor-name">${LABELS[ip.from]} → ${LABELS[ip.to]}</td>
-        <td class="mono val-bid">${fmtSigned(payerPts)}</td>
+        <td class="mono val-bid">${payerPts !== null ? fmtSigned(payerPts) : '—'}</td>
         <td class="mono val-bid">${payerPerDay !== null ? fmtSigned(payerPerDay) : '—'}</td>
-        <td class="mono val-offer">${fmtSigned(receiverPts)}</td>
+        <td class="mono val-offer">${receiverPts !== null ? fmtSigned(receiverPts) : '—'}</td>
         <td class="mono val-offer">${receiverPerDay !== null ? fmtSigned(receiverPerDay) : '—'}</td>
       </tr>
     `;
@@ -953,6 +1042,7 @@
     renderSolverStatus();
     renderImpliedPremiums();
     renderBrokenDates();
+    renderValueDates();
   }
 
   /* ==================================================================
