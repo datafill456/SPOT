@@ -148,6 +148,16 @@
   </div>
 
   <div class="card">
+    <h2>Value Dates <span class="hint">Computed from the calendar engine — correct any that look wrong (a missed holiday, an edge case) by editing it directly</span></h2>
+    <div style="overflow-x:auto;">
+      <table class="dealer" id="valueDateTable">
+        <thead><tr><th>Tenor</th><th>Computed Date</th><th>Correct It <span class="hint">blank = use computed</span></th></tr></thead>
+        <tbody id="valueDateTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Dealer Quote Screen <span class="hint">Live · read-only · Payer sells near @ bid / buys back far @ bid + Payer premium · Receiver buys near @ offer / sells back far @ offer + Receiver premium · brackets show the premium between every consecutive tenor · green/red glowing bar = a typed premium is confirmed by your typed rates at both ends</span></h2>
     <div id="matchBanner" style="display:none;"></div>
     <div id="mismatchBanner" style="display:none;"></div>
