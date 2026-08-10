@@ -46,7 +46,7 @@
     valueDateOverrides: {}, // { tenor: 'YYYY-MM-DD' } — manual correction if the computed date is wrong
     valueDates: null,
     solved: null,
-    impliedPremiums: [],
+    tenorRelations: [],
     matches: [], // [{ from, to, side }] — typed rate agrees with typed premium
     mismatches: [], // [{ from, to, side, typedPremiumPts, actualDiffPts, offPts, suggestedFromRate, suggestedToRate }]
   };
@@ -155,6 +155,7 @@
       const d = FXCalendar.parse(iso);
       state.valueDates.dates[t] = d;
       state.valueDates.days[t] = FXCalendar.calendarDaysBetween(state.valueDates.spot, d);
+      state.valueDates.daysFromCash[t] = FXCalendar.calendarDaysBetween(state.valueDates.cash, d);
       if (t === 'spot') state.valueDates.spot = d;
       if (t === 'cash') state.valueDates.cash = d;
       if (t === 'tom') state.valueDates.tom = d;
@@ -217,9 +218,10 @@
     // tenor's anchor + the premium chain. Keep the raw typed anchors here
     // so the ladder can always show what was actually typed for a tenor
     // that has one, rather than a derived figure the dealer never entered.
+    state.anchors = anchors;
     state.anchorByNode = {};
     anchors.forEach((a) => { state.anchorByNode[a.node] = a; });
-    state.impliedPremiums = FXCalculator.computeImpliedPremiums(anchors);
+    state.tenorRelations = FXCalculator.computeTenorRelations(anchors, state.valueDates.days);
 
     // Match detection: a Premium Entry "confirms" against the board when
     // BOTH its endpoints also have a directly-typed Rate Entry (not a
@@ -946,7 +948,7 @@
     if (!tbody) return;
     tbody.innerHTML = TENORS.map((t) => {
       const d = state.valueDates.dates[t];
-      const nod = state.valueDates.days[t];
+      const nod = state.valueDates.daysFromCash[t];
       return `
         <tr>
           <td class="tenor-name">${LABELS[t]}</td>
@@ -978,43 +980,20 @@
   /* ==================================================================
      RENDER: Implied Premiums (from 2+ direct rates)
      ================================================================== */
-  function buildTenorRelations() {
-    const orderedNodes = TENORS.filter((t) => {
-      const a = state.anchorByNode[t];
-      return a && (isNum(a.bid) || isNum(a.offer));
-    });
-    const relations = [];
-    for (let i = 0; i < orderedNodes.length; i++) {
-      for (let j = i + 1; j < orderedNodes.length; j++) {
-        const from = orderedNodes[i];
-        const to = orderedNodes[j];
-        const a = state.anchorByNode[from];
-        const b = state.anchorByNode[to];
-        const payerPremium = isNum(a.bid) && isNum(b.bid) ? b.bid - a.bid : null;
-        const receiverPremium = isNum(a.offer) && isNum(b.offer) ? b.offer - a.offer : null;
-        if (payerPremium !== null || receiverPremium !== null) {
-          relations.push({ from, to, payerPremium, receiverPremium });
-        }
-      }
-    }
-    return relations;
-  }
-
   function renderImpliedPremiums() {
     const card = document.getElementById('impliedCard');
     const tbody = document.getElementById('impliedTableBody');
-    const relations = buildTenorRelations();
+    const relations = state.tenorRelations;
     if (!relations.length) {
       card.style.display = 'none';
       return;
     }
     card.style.display = '';
     tbody.innerHTML = relations.map((ip) => {
-      const days = state.valueDates.days[ip.to] - state.valueDates.days[ip.from];
       const payerPts = isNum(ip.payerPremium) ? ip.payerPremium * 100 : null;
       const receiverPts = isNum(ip.receiverPremium) ? ip.receiverPremium * 100 : null;
-      const payerPerDay = payerPts !== null && days !== 0 ? payerPts / days : null;
-      const receiverPerDay = receiverPts !== null && days !== 0 ? receiverPts / days : null;
+      const payerPerDay = isNum(ip.payerPremiumPerDay) ? ip.payerPremiumPerDay * 100 : null;
+      const receiverPerDay = isNum(ip.receiverPremiumPerDay) ? ip.receiverPremiumPerDay * 100 : null;
       return `
       <tr>
         <td class="tenor-name">${LABELS[ip.from]} → ${LABELS[ip.to]}</td>
