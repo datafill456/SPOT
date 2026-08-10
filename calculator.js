@@ -64,11 +64,13 @@ const FXCalculator = (function () {
     dates['12M'] = cal.addTenorMonths(spot, 12);
 
     const days = {};
+    const daysFromCash = {};
     TENOR_ORDER.forEach((t) => {
-      days[t] = cal.calendarDaysBetween(spot, dates[t]); // negative for cash/tom
+      days[t] = cal.calendarDaysBetween(spot, dates[t]); // negative for cash/tom — this is what the swap-point solver and Per Day premiums use throughout, since Spot is the real market anchor for forward points
+      daysFromCash[t] = cal.calendarDaysBetween(cash, dates[t]); // Cash as day 0 — for display (NOD column), matching how a dealer reads "days to settlement" from the trade date itself
     });
 
-    return { cash, tom, spot, dates, days };
+    return { cash, tom, spot, dates, days, daysFromCash };
   }
 
   /**
@@ -291,6 +293,46 @@ const FXCalculator = (function () {
     return results;
   }
 
+  /**
+   * Every pair of directly-typed Rate Entries, linked to each other —
+   * not just consecutive tenors, and not just pairs where BOTH sides of
+   * BOTH rates are known. Unlike computeImpliedPremiums (which requires
+   * a full Bid/Offer on both ends), this also works when only one side
+   * was typed on either tenor — e.g. two bid-only entries still produce
+   * a Payer relation, just no Receiver figure. Each relation includes
+   * the real calendar days between the two tenors (via `days`, e.g.
+   * ValueDates.days) so the caller can derive Per Day alongside the
+   * flat total, exactly once, in one place.
+   */
+  function computeTenorRelations(anchors, days) {
+    const byNode = {};
+    anchors.forEach((a) => { byNode[a.node] = a; });
+    const ordered = TENOR_ORDER.filter((t) => {
+      const a = byNode[t];
+      return a && (isNum(a.bid) || isNum(a.offer));
+    });
+    const results = [];
+    for (let i = 0; i < ordered.length; i++) {
+      for (let j = i + 1; j < ordered.length; j++) {
+        const from = ordered[i];
+        const to = ordered[j];
+        const a = byNode[from];
+        const b = byNode[to];
+        const payerPremium = numOrNull(b.bid, a.bid, (x, y) => x - y);
+        const receiverPremium = numOrNull(b.offer, a.offer, (x, y) => x - y);
+        if (payerPremium === null && receiverPremium === null) continue;
+        const d = days && isNum(days[to]) && isNum(days[from]) ? days[to] - days[from] : null;
+        results.push({
+          from, to, days: d,
+          payerPremium, receiverPremium,
+          payerPremiumPerDay: payerPremium !== null && d ? payerPremium / d : null,
+          receiverPremiumPerDay: receiverPremium !== null && d ? receiverPremium / d : null,
+        });
+      }
+    }
+    return results;
+  }
+
   function isNum(v) { return typeof v === 'number' && !Number.isNaN(v); }
   function numOrNull(a, b, fn) { return isNum(a) && isNum(b) ? fn(a, b) : null; }
 
@@ -303,5 +345,6 @@ const FXCalculator = (function () {
     intervalPremium,
     interpolateBrokenDate,
     computeImpliedPremiums,
+    computeTenorRelations,
   };
 })();
