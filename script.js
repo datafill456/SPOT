@@ -946,10 +946,12 @@
     if (!tbody) return;
     tbody.innerHTML = TENORS.map((t) => {
       const d = state.valueDates.dates[t];
+      const nod = state.valueDates.days[t];
       return `
         <tr>
           <td class="tenor-name">${LABELS[t]}</td>
           <td class="mono">${d ? fmtDateLabel(d) : '—'}</td>
+          <td class="mono" style="text-align:right;">${isNum(nod) ? nod : '—'}</td>
           <td><input type="date" class="cell-input" style="width:150px;" data-value-date-tenor="${t}" value="${state.valueDateOverrides[t] || ''}"></td>
         </tr>
       `;
