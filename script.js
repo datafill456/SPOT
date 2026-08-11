@@ -948,7 +948,7 @@
     if (!tbody) return;
     tbody.innerHTML = TENORS.map((t) => {
       const d = state.valueDates.dates[t];
-      const nod = state.valueDates.daysFromCash[t];
+      const nod = NEAR_DATES.includes(t) || t === 'spot' ? state.valueDates.daysFromCash[t] : state.valueDates.days[t];
       return `
         <tr>
           <td class="tenor-name">${LABELS[t]}</td>
@@ -1184,7 +1184,19 @@
     document.getElementById('bigFigureInput').value = state.bigFigure;
 
     wireStaticControls();
+    wireTabs();
     renderAllViews();
+  }
+
+  function wireTabs() {
+    document.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+        document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById(btn.dataset.view).classList.add('active');
+      });
+    });
   }
 
   document.addEventListener('DOMContentLoaded', init);
