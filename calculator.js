@@ -40,11 +40,13 @@
    ============================================================ */
 
 const FXCalculator = (function () {
-  const TENOR_ORDER = ['cash', 'tom', 'spot', '1W', '2W', '1M', '2M', '3M', '6M', '12M'];
+  const TENOR_ORDER = ['cash', 'tom', 'spot', '1W', '2W', '3W', '1M', '2M', '3M', '4M', '5M', '6M', '7M', '8M', '9M', '10M', '11M', '12M'];
   const TENOR_LABELS = {
     cash: 'Cash', tom: 'Tom', spot: 'Spot',
-    '1W': '1 Week', '2W': '2 Weeks', '1M': '1 Month', '2M': '2 Months',
-    '3M': '3 Months', '6M': '6 Months', '12M': '12 Months',
+    '1W': '1 Week', '2W': '2 Weeks', '3W': '3 Weeks',
+    '1M': '1 Month', '2M': '2 Months', '3M': '3 Months', '4M': '4 Months',
+    '5M': '5 Months', '6M': '6 Months', '7M': '7 Months', '8M': '8 Months',
+    '9M': '9 Months', '10M': '10 Months', '11M': '11 Months', '12M': '12 Months',
   };
 
   /** Build the full value-date ladder from today's trade date. */
@@ -57,11 +59,10 @@ const FXCalculator = (function () {
     const dates = { cash, tom, spot };
     dates['1W'] = cal.addTenorWeeks(spot, 1);
     dates['2W'] = cal.addTenorWeeks(spot, 2);
-    dates['1M'] = cal.addTenorMonths(spot, 1);
-    dates['2M'] = cal.addTenorMonths(spot, 2);
-    dates['3M'] = cal.addTenorMonths(spot, 3);
-    dates['6M'] = cal.addTenorMonths(spot, 6);
-    dates['12M'] = cal.addTenorMonths(spot, 12);
+    dates['3W'] = cal.addTenorWeeks(spot, 3);
+    for (let m = 1; m <= 12; m++) {
+      dates[`${m}M`] = cal.addTenorMonths(spot, m);
+    }
 
     const days = {};
     const daysFromCash = {};
@@ -80,7 +81,7 @@ const FXCalculator = (function () {
    * couple of common Cash-based skips. Dealers can add any other
    * pair with the "custom interval" row in the UI.
    */
-  const FORWARD_TENORS = ['1W', '2W', '1M', '2M', '3M', '6M', '12M'];
+  const FORWARD_TENORS = ['1W', '2W', '3W', '1M', '2M', '3M', '4M', '5M', '6M', '7M', '8M', '9M', '10M', '11M', '12M'];
   const FORWARD_POINTS = ['spot', ...FORWARD_TENORS];
   const DEFAULT_INTERVALS = [
     ['cash', 'tom'],
