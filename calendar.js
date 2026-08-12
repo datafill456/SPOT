@@ -74,6 +74,26 @@ const SL_HOLIDAY_NAMES_2026 = {
   '2026-12-25': 'Christmas Day',
 };
 
+/**
+ * US Federal Reserve holidays. USD/LKR settlement genuinely needs BOTH
+ * Sri Lanka AND US banking days to be open — a date only earns "working
+ * day" status if neither side is closed. Source: Federal Reserve holiday
+ * schedule. Update alongside SL_HOLIDAYS_2026 every December.
+ */
+const US_HOLIDAYS_2026 = [
+  '2026-01-01', // New Year's Day
+  '2026-01-19', // Martin Luther King Jr. Day
+  '2026-02-16', // Washington's Birthday
+  '2026-05-25', // Memorial Day
+  '2026-06-19', // Juneteenth
+  '2026-07-03', // Independence Day (observed)
+  '2026-09-07', // Labor Day
+  '2026-10-12', // Columbus Day
+  '2026-11-11', // Veterans Day
+  '2026-11-26', // Thanksgiving Day
+  '2026-12-25', // Christmas Day
+];
+
 const FXCalendar = (function () {
   // Live-editable holiday set, backed by localStorage so users can add
   // ad-hoc bank holidays without touching code.
@@ -90,6 +110,7 @@ const FXCalendar = (function () {
   }
 
   let holidaySet = loadHolidaySet();
+  const usHolidaySet = new Set(US_HOLIDAYS_2026);
 
   function fmt(date) {
     const y = date.getFullYear();
@@ -112,12 +133,23 @@ const FXCalendar = (function () {
     return holidaySet.has(fmt(date));
   }
 
+  /** US Federal Reserve holiday (weekends handled separately by isWeekend). */
+  function isUSHoliday(date) {
+    return usHolidaySet.has(fmt(date));
+  }
+
   function holidayName(date) {
     return SL_HOLIDAY_NAMES_2026[fmt(date)] || 'Bank Holiday';
   }
 
+  /**
+   * A "working day" for USD/LKR settlement needs Sri Lanka AND the US
+   * both open — a US-only holiday (e.g. Thanksgiving) still stops a
+   * genuine USD settlement from happening that day, even though Sri
+   * Lanka's own banks are open.
+   */
   function isWorkingDay(date) {
-    return !isWeekend(date) && !isHoliday(date);
+    return !isWeekend(date) && !isHoliday(date) && !isUSHoliday(date);
   }
 
   function addDays(date, n) {
@@ -249,6 +281,7 @@ const FXCalendar = (function () {
     parse,
     isWeekend,
     isHoliday,
+    isUSHoliday,
     holidayName,
     isWorkingDay,
     addDays,
