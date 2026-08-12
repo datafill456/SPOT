@@ -744,6 +744,46 @@
         svg += `<path d="${p.d}" fill="none" class="ladder-mismatch-line ladder-mismatch-${m.side}"></path>`;
         svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-mismatch-label">⚠</text>`;
       });
+
+      // Confirmed matches/mismatches only exist where a premium chain
+      // connects two tenors. Two tenors can both be directly typed with
+      // NO premium entered between them at all (e.g. just Spot and 1M) —
+      // that pair still deserves a curve showing the real relationship
+      // implied by those two rates: full difference AND per-day, split
+      // Payer/Receiver, in a neutral (non-animated) style so it reads as
+      // "informational" rather than "confirmed" or "a warning".
+      const coveredPairs = new Set();
+      (matches || []).concat(mismatches || []).forEach((m) => coveredPairs.add(m.from + '|' + m.to + '|' + m.side));
+      const activeIdx = TENORS.indexOf(activeTenor);
+      const activeAnchor = (anchorByNode || {})[activeTenor];
+      if (activeAnchor) {
+        TENORS.forEach((other, otherIdx) => {
+          if (other === activeTenor) return;
+          const otherAnchor = (anchorByNode || {})[other];
+          if (!otherAnchor) return;
+          const [fromNode, toNode] = activeIdx < otherIdx ? [activeTenor, other] : [other, activeTenor];
+          const fromA = (anchorByNode || {})[fromNode];
+          const toA = (anchorByNode || {})[toNode];
+          const days = state.valueDates.days[toNode] - state.valueDates.days[fromNode];
+
+          if (isNum(fromA.bid) && isNum(toA.bid) && !coveredPairs.has(fromNode + '|' + toNode + '|payer')) {
+            const p = matchPath(TENORS.indexOf(fromNode), TENORS.indexOf(toNode), 'payer');
+            const totalPts = (toA.bid - fromA.bid) * 100;
+            const perDay = days !== 0 ? totalPts / days : null;
+            const label = `Payer ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
+            svg += `<path d="${p.d}" fill="none" class="ladder-relation-line"></path>`;
+            svg += `<text x="${p.labelX + 6}" y="${p.labelY}" dominant-baseline="central" class="ladder-relation-label ladder-implied-payer">${label}</text>`;
+          }
+          if (isNum(fromA.offer) && isNum(toA.offer) && !coveredPairs.has(fromNode + '|' + toNode + '|receiver')) {
+            const p = matchPath(TENORS.indexOf(fromNode), TENORS.indexOf(toNode), 'receiver');
+            const totalPts = (toA.offer - fromA.offer) * 100;
+            const perDay = days !== 0 ? totalPts / days : null;
+            const label = `Receiver ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
+            svg += `<path d="${p.d}" fill="none" class="ladder-relation-line"></path>`;
+            svg += `<text x="${p.labelX - 6}" y="${p.labelY}" text-anchor="end" dominant-baseline="central" class="ladder-relation-label ladder-implied-receiver">${label}</text>`;
+          }
+        });
+      }
     }
 
     svg += `</svg>`;
