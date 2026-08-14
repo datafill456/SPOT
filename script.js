@@ -60,6 +60,37 @@
   }
 
   function isNum(v) { return typeof v === 'number' && !Number.isNaN(v); }
+
+  /**
+   * Native <input type="date"> pickers can be awkward to type a year into
+   * on some browsers/devices, so date correction/entry fields use a plain
+   * text input instead. Accepts DD-MM-YYYY, DD/MM/YYYY, or YYYY-MM-DD
+   * (typed with any of -, /, . as separators) and returns ISO
+   * 'YYYY-MM-DD', or null if it doesn't look like a real date.
+   */
+  function parseFlexibleDateToISO(str) {
+    if (!str || !str.trim()) return null;
+    const parts = str.trim().split(/[-/.]/).map((p) => p.trim());
+    if (parts.length !== 3) return null;
+    let y, m, d;
+    if (parts[0].length === 4) { [y, m, d] = parts; } // YYYY-MM-DD
+    else { [d, m, y] = parts; } // DD-MM-YYYY
+    y = parseInt(y, 10); m = parseInt(m, 10); d = parseInt(d, 10);
+    if (!isFinite(y) || !isFinite(m) || !isFinite(d)) return null;
+    if (y < 100) y += 2000;
+    if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1900 || y > 2200) return null;
+    const dt = new Date(y, m - 1, d);
+    if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null; // rejects e.g. 31-02-2026
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+
+  /** ISO 'YYYY-MM-DD' -> 'DD-MM-YYYY' for display in the text date fields. */
+  function isoToDisplayDate(iso) {
+    if (!iso) return '';
+    const [y, m, d] = iso.split('-');
+    if (!y || !m || !d) return '';
+    return `${d}-${m}-${y}`;
+  }
   function roundsToSame(a, b, dp = 2) {
     return isNum(a) && isNum(b) && a.toFixed(dp) === b.toFixed(dp);
   }
@@ -936,7 +967,7 @@
         const targetDate = FXCalendar.parse(bd.dateStr);
         const result = FXCalculator.interpolateBrokenDate(state.solved.curve, targetDate, state.valueDates.spot);
         const tr = document.createElement('tr');
-        const dateInputCell = `<td><input type="date" class="cell-input" style="width:150px;" data-broken-date-id="${bd.id}" value="${bd.dateStr}"></td>`;
+        const dateInputCell = `<td><input type="text" class="cell-input" style="width:110px;" placeholder="DD-MM-YYYY" data-broken-date-id="${bd.id}" value="${isoToDisplayDate(bd.dateStr)}"></td>`;
         if (!result) {
           tr.innerHTML = `
             ${dateInputCell}
@@ -962,11 +993,12 @@
     tbody.querySelectorAll('[data-broken-date-id]').forEach((input) => {
       input.addEventListener('change', () => {
         const entry = state.brokenDates.find((e) => e.id === Number(input.dataset.brokenDateId));
-        if (entry && input.value) {
-          entry.dateStr = input.value;
-          renderBrokenDates();
-          scheduleSaveDraft();
-        }
+        if (!entry) return;
+        const iso = parseFlexibleDateToISO(input.value);
+        if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); renderBrokenDates(); return; }
+        entry.dateStr = iso;
+        renderBrokenDates();
+        scheduleSaveDraft();
       });
     });
 
@@ -994,7 +1026,7 @@
           <td class="tenor-name">${LABELS[t]}</td>
           <td class="mono">${d ? fmtDateLabel(d) : '—'}</td>
           <td class="mono" style="text-align:right;">${isNum(nod) ? nod : '—'}</td>
-          <td><input type="date" class="cell-input" style="width:150px;" data-value-date-tenor="${t}" value="${state.valueDateOverrides[t] || ''}"></td>
+          <td><input type="text" class="cell-input" style="width:110px;" placeholder="DD-MM-YYYY" data-value-date-tenor="${t}" value="${isoToDisplayDate(state.valueDateOverrides[t])}"></td>
         </tr>
       `;
     }).join('');
@@ -1002,10 +1034,12 @@
     tbody.querySelectorAll('[data-value-date-tenor]').forEach((input) => {
       input.addEventListener('change', () => {
         const t = input.dataset.valueDateTenor;
-        if (input.value) {
-          state.valueDateOverrides[t] = input.value;
-        } else {
+        if (!input.value.trim()) {
           delete state.valueDateOverrides[t];
+        } else {
+          const iso = parseFlexibleDateToISO(input.value);
+          if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); return; }
+          state.valueDateOverrides[t] = iso;
         }
         recompute();
         renderRateTable();
@@ -1114,8 +1148,10 @@
 
     document.getElementById('addBrokenDateBtn').addEventListener('click', () => {
       const input = document.getElementById('newBrokenDateInput');
-      if (!input.value) { alert('Pick a date first.'); return; }
-      state.brokenDates.push({ id: nextBrokenDateId++, dateStr: input.value });
+      if (!input.value.trim()) { alert('Type a date first, e.g. 15-09-2026.'); return; }
+      const iso = parseFlexibleDateToISO(input.value);
+      if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); return; }
+      state.brokenDates.push({ id: nextBrokenDateId++, dateStr: iso });
       input.value = '';
       renderBrokenDates();
       scheduleSaveDraft();
