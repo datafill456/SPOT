@@ -244,6 +244,56 @@ input.cell-input.shorthand { width: 100px; text-align: center; }
 .solver-status.ok { border-color: var(--green); color: var(--green); }
 .solver-status.warn { border-color: var(--amber); color: var(--amber); }
 
+/* ---------------- Pair detail (two-tenor 🔗 pick) ---------------- */
+.pair-detail-box {
+  display: none;
+  margin-top: 12px;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-raised);
+}
+.pair-detail-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.pair-detail-days {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.pair-detail-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+}
+.pair-detail-label {
+  width: 66px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+.pair-detail-value {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 21px;
+  font-weight: 700;
+}
+.pair-detail-payer .pair-detail-value { color: var(--green); }
+.pair-detail-receiver .pair-detail-value { color: var(--red); }
+.pair-detail-muted .pair-detail-value { color: var(--text-muted); font-weight: 400; font-size: 16px; }
+.pair-detail-sub { font-size: 12px; color: var(--text-muted); font-family: 'IBM Plex Mono', monospace; }
+.pair-detail-empty { font-size: 12px; color: var(--text-muted); }
+
 /* ---------------- Charts ---------------- */
 .chart-box { position: relative; height: 320px; }
 
