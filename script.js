@@ -665,8 +665,17 @@
       const anchor = (anchorByNode || {})[t];
       const outrightPayerVal = isNum(anchor && anchor.bid) ? fmtRatePairParts(anchor.bid, null)[0] : '';
       const outrightReceiverVal = isNum(anchor && anchor.offer) ? fmtRatePairParts(null, anchor.offer)[1] : '';
-      const swapPayerVal = fmtRatePairParts(c.payerBid, null)[0];
-      const swapReceiverVal = fmtRatePairParts(null, c.receiverOffer)[1];
+      // A node that IS the anchor for its own component (e.g. Spot with
+      // no premium entries touching it at all) mechanically solves back
+      // to exactly its own outright — that's not an independently
+      // "derived via swap points" price, it's just an echo. Only show
+      // the Swap line when it actually carries different information
+      // than the Outright line (a real chain result, or a genuine
+      // mismatch worth flagging) — never as a same-value duplicate.
+      let swapPayerVal = fmtRatePairParts(c.payerBid, null)[0];
+      let swapReceiverVal = fmtRatePairParts(null, c.receiverOffer)[1];
+      if (outrightPayerVal && outrightPayerVal === swapPayerVal) swapPayerVal = '';
+      if (outrightReceiverVal && outrightReceiverVal === swapReceiverVal) swapReceiverVal = '';
       const payerPremLabel = fmtPremiumPts(c.payerPremium);
       const receiverPremLabel = fmtPremiumPts(c.receiverPremium);
       // Show the whole-number "Big Figure" actually in use for this
