@@ -15,6 +15,8 @@
   .ladder-tenor { font-size: 12px; fill: var(--text, currentColor); }
   .ladder-bigfig { font-size: 9px; fill: var(--text-muted, #7c8797); font-family: 'IBM Plex Mono', monospace; }
   .ladder-val { font-size: 13px; font-weight: 600; }
+  .val-outright { fill: var(--amber, #ffb020); font-weight: 700; }
+  .ladder-val-swap { font-size: 11px; font-weight: 600; opacity: 0.9; }
   .val-bid { fill: var(--green, #3ba55d); }
   .val-offer { fill: var(--red, #d9534f); }
   .ladder-tick { stroke: var(--border, rgba(128,128,128,0.35)); stroke-width: 0.75; }
@@ -153,7 +155,7 @@
   </div>
 
   <div class="card">
-    <h2>Dealer Quote Screen <span class="hint">Live · read-only · Payer sells near @ bid / buys back far @ bid + Payer premium · Receiver buys near @ offer / sells back far @ offer + Receiver premium · brackets show the premium between every consecutive tenor · green/red glowing bar = a typed premium is confirmed by your typed rates at both ends</span></h2>
+    <h2>Dealer Quote Screen <span class="hint">Live · read-only · amber = Outright (a rate you typed directly for that tenor) · green/red = Swap (built purely from the Payer/Receiver premium chain) · Payer sells near @ bid / buys back far @ bid + Payer premium · Receiver buys near @ offer / sells back far @ offer + Receiver premium · brackets show the premium between every consecutive tenor · glowing bar = a typed premium is confirmed by your typed rates at both ends · click 🔗 on two tenors to compare that exact pair below</span></h2>
     <div id="matchBanner" style="display:none;"></div>
     <div id="mismatchBanner" style="display:none;"></div>
     <div id="quoteLadderWrap" style="overflow-x:auto;"></div>
