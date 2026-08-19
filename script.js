@@ -42,7 +42,7 @@
     rateEntries: [],     // [{ id, node, rate: '30/40' }]
     premiumEntries: [],  // [{ id, from, to, premium: '5/5.5', perDay: bool }]
     brokenDates: [],     // [{ id, dateStr: 'YYYY-MM-DD' }] — odd/custom tenor dates
-    activeRelationTenor: null, // which tenor's relation curves are shown on the ladder, if any
+    selectedTenors: [], // up to 2 tenors picked via the 🔗 button — [first=anchor, second=compare] shows one curve + a detail message
     valueDateOverrides: {}, // { tenor: 'YYYY-MM-DD' } — manual correction if the computed date is wrong
     valueDates: null,
     solved: null,
@@ -618,10 +618,10 @@
     return (pts >= 0 ? '+' : '') + fmtTrim(pts);
   }
 
-  function buildLadderSVG(curve, matches, mismatches, anchorByNode, activeTenor) {
+  function buildLadderSVG(curve, matches, mismatches, anchorByNode, selectedTenors) {
     const n = TENORS.length;
-    const rowH = 34;
-    const slot = 44;
+    const rowH = 48;
+    const slot = 62;
     const topPad = 26;
     const height = topPad + n * slot + 14;
 
@@ -645,43 +645,58 @@
       const c = curve[t];
       const y = rowY(i);
       const cy = rowCenterY(i);
-      const valY = y + 14;
-      const premY = y + 27;
-      // A tenor the dealer typed a rate for directly should always show
-      // THAT rate — never a value the solver derived from a different
-      // tenor's anchor sharing the same premium chain (solveMarket only
-      // keeps one anchor per connected component). Any real discrepancy
-      // between them is what the match/mismatch banner is for.
+      const nameY = y + 17;
+      const bigfigY = y + 33;
+      const outrightY = y + 14;
+      const swapY = y + 29;
+      const premY = y + 43;
+      // Two separate price lines per tenor, so it's obvious how the deal
+      // was actually done:
+      //  - Outright: ONLY what the dealer directly typed as a Rate Entry
+      //    for this exact tenor — blank if nothing was typed here. This
+      //    is a real quoted outright, i.e. a deal that could be dealt as
+      //    an outright as-is.
+      //  - Swap: the price built purely from the Payer/Receiver premium
+      //    chain (today's payerBid / receiverOffer), regardless of
+      //    whether this tenor also has its own outright. This is the
+      //    price a swap deal (near-date rate + forward points) implies.
+      // When both are present and agree, the tenor is confirmed either
+      // way; when they disagree, that's a live mismatch (see banners).
       const anchor = (anchorByNode || {})[t];
-      const displayPayerBid = isNum(anchor && anchor.bid) ? anchor.bid : c.payerBid;
-      const displayReceiverOffer = isNum(anchor && anchor.offer) ? anchor.offer : c.receiverOffer;
-      const payerVal = fmtRatePairParts(displayPayerBid, null)[0];
-      const receiverVal = fmtRatePairParts(null, displayReceiverOffer)[1];
+      const outrightPayerVal = isNum(anchor && anchor.bid) ? fmtRatePairParts(anchor.bid, null)[0] : '';
+      const outrightReceiverVal = isNum(anchor && anchor.offer) ? fmtRatePairParts(null, anchor.offer)[1] : '';
+      const swapPayerVal = fmtRatePairParts(c.payerBid, null)[0];
+      const swapReceiverVal = fmtRatePairParts(null, c.receiverOffer)[1];
       const payerPremLabel = fmtPremiumPts(c.payerPremium);
       const receiverPremLabel = fmtPremiumPts(c.receiverPremium);
       // Show the whole-number "Big Figure" actually in use for this
       // tenor — whichever value is available — so it's obvious at a
       // glance whether the auto-detected/refined figure looks right,
       // without having to open Rate Entries to check.
-      const bigFigSource = isNum(displayPayerBid) ? displayPayerBid : displayReceiverOffer;
+      const bigFigSource = isNum(anchor && anchor.bid) ? anchor.bid : (isNum(c.payerBid) ? c.payerBid : c.receiverOffer);
       const bigFigLabel = isNum(bigFigSource) ? `BF ${Math.floor(bigFigSource)}` : '';
       const spotClass = t === 'spot' ? ' ladder-row-spot' : '';
       svg += `
         <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
-        <text x="${payerX + 8}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
-        <text x="${payerX + 8}" y="${premY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
-        <text x="${payerX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid ladder-val-editable" data-tenor="${t}" data-side="payer">${payerVal}</text>
+        <text x="${payerX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
+        <text x="${payerX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
+        <rect x="${payerX + colW - 110}" y="${y}" width="106" height="18" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="payer"></rect>
+        <text x="${payerX + colW - 8}" y="${outrightY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-outright" pointer-events="none">${outrightPayerVal}</text>
+        <text x="${payerX + colW - 8}" y="${swapY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid ladder-val-swap">${swapPayerVal}</text>
         <text x="${payerX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${payerPremLabel}</text>
 
         <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
-        <text x="${receiverX + 8}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
-        <text x="${receiverX + 8}" y="${premY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
-        <text x="${receiverX + colW - 8}" y="${valY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-offer ladder-val-editable" data-tenor="${t}" data-side="receiver">${receiverVal}</text>
+        <text x="${receiverX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
+        <text x="${receiverX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
+        <rect x="${receiverX + colW - 110}" y="${y}" width="106" height="18" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="receiver"></rect>
+        <text x="${receiverX + colW - 8}" y="${outrightY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-outright" pointer-events="none">${outrightReceiverVal}</text>
+        <text x="${receiverX + colW - 8}" y="${swapY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-offer ladder-val-swap">${swapReceiverVal}</text>
         <text x="${receiverX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${receiverPremLabel}</text>
+
 
         <line x1="${payerX + colW}" y1="${cy}" x2="${payerRailX}" y2="${cy}" class="ladder-tick"></line>
         <line x1="${receiverRailX}" y1="${cy}" x2="${receiverX}" y2="${cy}" class="ladder-tick"></line>
-        <circle cx="${(payerRailX + receiverRailX) / 2}" cy="${cy}" r="7" class="ladder-relations-btn${t === activeTenor ? ' active' : ''}" data-tenor="${t}"></circle>
+        <circle cx="${(payerRailX + receiverRailX) / 2}" cy="${cy}" r="7" class="ladder-relations-btn${(selectedTenors || []).includes(t) ? ' active' : ''}" data-tenor="${t}"></circle>
         <text x="${(payerRailX + receiverRailX) / 2}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-relations-glyph" pointer-events="none">🔗</text>
       `;
     });
@@ -723,95 +738,51 @@
       };
     }
 
-    // A straight line for an adjacent pair reads fine sitting on the rail.
-    // But a pair that SKIPS a tenor (Cash->Spot skipping Tom, 1W->1M
-    // skipping 2W) drawn as the same straight line looks like it's just
-    // running past the skipped row rather than jumping over it — so those
-    // get an outward-bulging curve instead, making the skip obvious.
-    function matchPath(fromIdx, toIdx, side) {
-      const lo = Math.min(fromIdx, toIdx);
-      const hi = Math.max(fromIdx, toIdx);
-      const y1 = rowCenterY(lo);
-      const y2 = rowCenterY(hi);
-      const x = side === 'payer' ? matchPayerX : matchReceiverX;
-      const skips = hi - lo > 1;
-      if (!skips) {
-        return { d: `M ${x} ${y1} L ${x} ${y2}`, labelX: x, labelY: (y1 + y2) / 2 };
-      }
-      const bulge = side === 'payer' ? 22 : -22;
-      const cx = x + bulge;
-      const midY = (y1 + y2) / 2;
-      return {
-        d: `M ${x} ${y1} Q ${cx} ${midY} ${x} ${y2}`,
-        labelX: cx, labelY: midY,
-      };
-    }
+    // A curve is drawn ONLY for the exact pair the dealer has picked by
+    // clicking the 🔗 button on two rows (first click = anchor tenor,
+    // second click = the tenor to compare it against) — one curve, one
+    // pair, instead of the old "every relation from one tenor" clutter.
+    // Payer and Receiver are drawn independently: a confirmed match gets
+    // a solid glowing ✓ line, a mismatch gets a pulsing ⚠ line, and if
+    // neither Premium Entry nor cross-check touched that pair but both
+    // tenors still have a directly-typed rate on that side, a neutral
+    // informational line shows the implied premium anyway. The matching
+    // detail message (total + per-day, Payer & Receiver) is rendered
+    // separately, below the ladder, by renderPairDetail().
+    if (selectedTenors && selectedTenors.length === 2) {
+      const rawIdxA = TENORS.indexOf(selectedTenors[0]);
+      const rawIdxB = TENORS.indexOf(selectedTenors[1]);
+      if (rawIdxA !== -1 && rawIdxB !== -1 && rawIdxA !== rawIdxB) {
+        const [fromNode, toNode] = rawIdxA < rawIdxB ? [selectedTenors[0], selectedTenors[1]] : [selectedTenors[1], selectedTenors[0]];
+        const fromIdx = TENORS.indexOf(fromNode);
+        const toIdx = TENORS.indexOf(toNode);
+        const samePair = (m) => (m.from === fromNode && m.to === toNode) || (m.from === toNode && m.to === fromNode);
 
-    // Curves are drawn ONLY for the tenor the dealer has clicked the 🔗
-    // button on (activeTenor) — showing every relation at once was the
-    // cluttered, unreadable mess from before. Just the curve and a small
-    // ✓/⚠ icon here — the full "Cash→3 Months Receiver" description
-    // already lives in the match/mismatch banners above, so it doesn't
-    // need to be repeated as floating text on the curve itself.
-    if (activeTenor) {
-      const involves = (m) => m.from === activeTenor || m.to === activeTenor;
-      (matches || []).filter(involves).forEach((m) => {
-        const fromIdx = TENORS.indexOf(m.from);
-        const toIdx = TENORS.indexOf(m.to);
-        if (fromIdx === -1 || toIdx === -1) return;
-        const anchor = m.side === 'payer' ? 'start' : 'end';
-        const p = matchPath(fromIdx, toIdx, m.side);
-        const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
-        svg += `<path d="${p.d}" fill="none" class="ladder-match-line ladder-match-${m.side}"></path>`;
-        svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-match-label">✓</text>`;
-      });
-      (mismatches || []).filter(involves).forEach((m) => {
-        const fromIdx = TENORS.indexOf(m.from);
-        const toIdx = TENORS.indexOf(m.to);
-        if (fromIdx === -1 || toIdx === -1) return;
-        const anchor = m.side === 'payer' ? 'start' : 'end';
-        const p = matchPath(fromIdx, toIdx, m.side);
-        const labelX = m.side === 'payer' ? p.labelX + 6 : p.labelX - 6;
-        svg += `<path d="${p.d}" fill="none" class="ladder-mismatch-line ladder-mismatch-${m.side}"></path>`;
-        svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchor}" dominant-baseline="central" class="ladder-mismatch-label">⚠</text>`;
-      });
+        ['payer', 'receiver'].forEach((side) => {
+          const p = matchPath(fromIdx, toIdx, side);
+          const anchorAttr = side === 'payer' ? 'start' : 'end';
+          const labelX = side === 'payer' ? p.labelX + 6 : p.labelX - 6;
+          const match = (matches || []).find((m) => m.side === side && samePair(m));
+          const mismatch = (mismatches || []).find((m) => m.side === side && samePair(m));
 
-      // Confirmed matches/mismatches only exist where a premium chain
-      // connects two tenors. Two tenors can both be directly typed with
-      // NO premium entered between them at all (e.g. just Spot and 1M) —
-      // that pair still deserves a curve showing the real relationship
-      // implied by those two rates: full difference AND per-day, split
-      // Payer/Receiver, in a neutral (non-animated) style so it reads as
-      // "informational" rather than "confirmed" or "a warning".
-      const coveredPairs = new Set();
-      (matches || []).concat(mismatches || []).forEach((m) => coveredPairs.add(m.from + '|' + m.to + '|' + m.side));
-      const activeIdx = TENORS.indexOf(activeTenor);
-      const activeAnchor = (anchorByNode || {})[activeTenor];
-      if (activeAnchor) {
-        TENORS.forEach((other, otherIdx) => {
-          if (other === activeTenor) return;
-          const otherAnchor = (anchorByNode || {})[other];
-          if (!otherAnchor) return;
-          const [fromNode, toNode] = activeIdx < otherIdx ? [activeTenor, other] : [other, activeTenor];
-          const fromA = (anchorByNode || {})[fromNode];
-          const toA = (anchorByNode || {})[toNode];
-          const days = state.valueDates.days[toNode] - state.valueDates.days[fromNode];
-
-          if (isNum(fromA.bid) && isNum(toA.bid) && !coveredPairs.has(fromNode + '|' + toNode + '|payer')) {
-            const p = matchPath(TENORS.indexOf(fromNode), TENORS.indexOf(toNode), 'payer');
-            const totalPts = (toA.bid - fromA.bid) * 100;
-            const perDay = days !== 0 ? totalPts / days : null;
-            const label = `Payer ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
-            svg += `<path d="${p.d}" fill="none" class="ladder-relation-line"></path>`;
-            svg += `<text x="${p.labelX + 6}" y="${p.labelY}" dominant-baseline="central" class="ladder-relation-label ladder-implied-payer">${label}</text>`;
-          }
-          if (isNum(fromA.offer) && isNum(toA.offer) && !coveredPairs.has(fromNode + '|' + toNode + '|receiver')) {
-            const p = matchPath(TENORS.indexOf(fromNode), TENORS.indexOf(toNode), 'receiver');
-            const totalPts = (toA.offer - fromA.offer) * 100;
-            const perDay = days !== 0 ? totalPts / days : null;
-            const label = `Receiver ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
-            svg += `<path d="${p.d}" fill="none" class="ladder-relation-line"></path>`;
-            svg += `<text x="${p.labelX - 6}" y="${p.labelY}" text-anchor="end" dominant-baseline="central" class="ladder-relation-label ladder-implied-receiver">${label}</text>`;
+          if (match) {
+            svg += `<path d="${p.d}" fill="none" class="ladder-match-line ladder-match-${side}"></path>`;
+            svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchorAttr}" dominant-baseline="central" class="ladder-match-label">✓</text>`;
+          } else if (mismatch) {
+            svg += `<path d="${p.d}" fill="none" class="ladder-mismatch-line ladder-mismatch-${side}"></path>`;
+            svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchorAttr}" dominant-baseline="central" class="ladder-mismatch-label">⚠</text>`;
+          } else {
+            const fromA = (anchorByNode || {})[fromNode];
+            const toA = (anchorByNode || {})[toNode];
+            const key = side === 'payer' ? 'bid' : 'offer';
+            if (fromA && toA && isNum(fromA[key]) && isNum(toA[key])) {
+              const totalPts = (toA[key] - fromA[key]) * 100;
+              const days = state.valueDates.days[toNode] - state.valueDates.days[fromNode];
+              const perDay = days !== 0 ? totalPts / days : null;
+              const label = `${side === 'payer' ? 'Payer' : 'Receiver'} ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
+              svg += `<path d="${p.d}" fill="none" class="ladder-relation-line"></path>`;
+              svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchorAttr}" dominant-baseline="central" class="ladder-relation-label ladder-implied-${side}">${label}</text>`;
+            }
           }
         });
       }
@@ -823,10 +794,91 @@
 
   function renderQuoteScreen() {
     const wrap = document.getElementById('quoteLadderWrap');
-    wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches, state.anchorByNode, state.activeRelationTenor);
+    wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches, state.anchorByNode, state.selectedTenors);
     attachLadderEditing(wrap);
     renderMatchBanner();
     renderMismatchBanner();
+    renderPairDetail();
+  }
+
+  /**
+   * Works out the Payer / Receiver total premium + per-day between the
+   * two directly-typed Rate Entries the dealer has picked with the 🔗
+   * button, in chronological order. Returns null if either tenor has no
+   * typed rate at all yet.
+   */
+  function computePairDetail(fromNode, toNode) {
+    const anchorByNode = state.anchorByNode || {};
+    const fromA = anchorByNode[fromNode];
+    const toA = anchorByNode[toNode];
+    if (!fromA || !toA) return null;
+    const days = state.valueDates.days[toNode] - state.valueDates.days[fromNode];
+    let payer = null;
+    if (isNum(fromA.bid) && isNum(toA.bid)) {
+      const total = (toA.bid - fromA.bid) * 100;
+      payer = { total, perDay: days !== 0 ? total / days : null };
+    }
+    let receiver = null;
+    if (isNum(fromA.offer) && isNum(toA.offer)) {
+      const total = (toA.offer - fromA.offer) * 100;
+      receiver = { total, perDay: days !== 0 ? total / days : null };
+    }
+    return { fromNode, toNode, days, payer, receiver };
+  }
+
+  function ensurePairDetailEl() {
+    let el = document.getElementById('pairDetailBox');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'pairDetailBox';
+      el.className = 'pair-detail-box';
+      const wrap = document.getElementById('quoteLadderWrap');
+      wrap.parentNode.insertBefore(el, wrap.nextSibling);
+    }
+    return el;
+  }
+
+  /** Big, clear Payer/Receiver detail message for the two tenors picked via 🔗. */
+  function renderPairDetail() {
+    const el = ensurePairDetailEl();
+    const sel = state.selectedTenors || [];
+    if (sel.length < 2) {
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }
+    const idxA = TENORS.indexOf(sel[0]);
+    const idxB = TENORS.indexOf(sel[1]);
+    if (idxA === -1 || idxB === -1 || idxA === idxB) {
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }
+    const [fromNode, toNode] = idxA < idxB ? [sel[0], sel[1]] : [sel[1], sel[0]];
+    const detail = computePairDetail(fromNode, toNode);
+    el.style.display = '';
+
+    if (!detail || (!detail.payer && !detail.receiver)) {
+      el.innerHTML = `<div class="pair-detail-empty">${LABELS[fromNode]} → ${LABELS[toNode]}: type a Rate for both tenors to see the premium here.</div>`;
+      return;
+    }
+
+    const absDays = Math.abs(detail.days);
+    const daysLabel = `${absDays} day${absDays === 1 ? '' : 's'}`;
+    const line = (side, data) => {
+      const label = side === 'payer' ? 'Payer' : 'Receiver';
+      if (!data) {
+        return `<div class="pair-detail-line pair-detail-${side} pair-detail-muted"><span class="pair-detail-label">${label}</span><span class="pair-detail-value">—</span></div>`;
+      }
+      const perDay = data.perDay !== null ? `<span class="pair-detail-sub">(${fmtSigned(data.perDay)}p/day)</span>` : '';
+      return `<div class="pair-detail-line pair-detail-${side}"><span class="pair-detail-label">${label}</span><span class="pair-detail-value">${fmtSigned(data.total)}p</span>${perDay}</div>`;
+    };
+
+    el.innerHTML = `
+      <div class="pair-detail-header">${LABELS[fromNode]} → ${LABELS[toNode]} <span class="pair-detail-days">${daysLabel}</span></div>
+      ${line('payer', detail.payer)}
+      ${line('receiver', detail.receiver)}
+    `;
   }
 
   /**
@@ -848,7 +900,15 @@
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => {
         const tenor = el.dataset.tenor;
-        state.activeRelationTenor = state.activeRelationTenor === tenor ? null : tenor;
+        const sel = state.selectedTenors;
+        const pos = sel.indexOf(tenor);
+        if (pos !== -1) {
+          sel.splice(pos, 1); // clicking an already-selected tenor deselects it
+        } else if (sel.length >= 2) {
+          state.selectedTenors = [tenor]; // a 3rd click starts a fresh pair, this tenor as the new anchor
+        } else {
+          sel.push(tenor); // 1st click = anchor, 2nd click = compare
+        }
         renderQuoteScreen();
       });
     });
@@ -864,8 +924,12 @@
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'cell-input ladder-edit-input';
-    const current = targetEl.textContent.trim();
-    input.value = current === '—' ? '' : current;
+    const anchor = (state.anchorByNode || {})[tenor];
+    const anchorVal = anchor && isNum(anchor[side === 'payer' ? 'bid' : 'offer']) ? anchor[side === 'payer' ? 'bid' : 'offer'] : null;
+    const current = anchorVal !== null
+      ? fmtRatePairParts(side === 'payer' ? anchorVal : null, side === 'receiver' ? anchorVal : null)[side === 'payer' ? 0 : 1]
+      : '';
+    input.value = current;
     input.style.position = 'absolute';
     input.style.left = `${rect.left - wrapRect.left - 60}px`;
     input.style.top = `${rect.top - wrapRect.top - 4}px`;
@@ -882,7 +946,9 @@
       done = true;
       const raw = input.value.trim();
       input.remove();
-      if (raw) applyLadderEdit(tenor, side, raw);
+      // Clearing the field to empty is a real edit too — it should erase
+      // that side of the typed rate, not silently keep the old value.
+      applyLadderEdit(tenor, side, raw);
     }
     function cancel() {
       if (done) return;
@@ -899,29 +965,47 @@
   function applyLadderEdit(tenor, side, raw) {
     let entry = state.rateEntries.find((e) => e.node === tenor);
     if (!entry) {
+      if (!raw) return; // cleared a field that had no Rate Entry anyway — nothing to do
       entry = { id: nextRateId++, node: tenor, rate: '' };
       state.rateEntries.push(entry);
     }
     const parts = (entry.rate || '').split('/');
     const bidPart = (parts[0] || '').trim();
     const offerPart = (parts.length > 1 ? parts[1] : '').trim();
-    entry.rate = side === 'payer' ? `${raw}/${offerPart}` : `${bidPart}/${raw}`;
+    const newBid = side === 'payer' ? raw : bidPart;
+    const newOffer = side === 'receiver' ? raw : offerPart;
+    entry.rate = `${newBid}/${newOffer}`;
+    if (!newBid && !newOffer) {
+      // Both sides are now blank — drop the Rate Entry entirely so the
+      // Outright line, Big Figure, and match/mismatch checks for this
+      // tenor all clear completely instead of leaving a stale "/" row.
+      state.rateEntries = state.rateEntries.filter((e) => e.id !== entry.id);
+    }
     recompute();
     renderRateTable();
     renderDownstream();
     scheduleSaveDraft();
   }
 
+  /** Only match/mismatch entries touching the exact 2 tenors currently picked via 🔗 (either order). Empty when fewer than 2 are selected. */
+  function selectedPairEntries(list) {
+    const sel = state.selectedTenors || [];
+    if (sel.length !== 2) return [];
+    const [a, b] = sel;
+    return (list || []).filter((m) => (m.from === a && m.to === b) || (m.from === b && m.to === a));
+  }
+
   function renderMatchBanner() {
     const el = document.getElementById('matchBanner');
     if (!el) return;
-    if (!state.matches.length) {
+    const matches = selectedPairEntries(state.matches);
+    if (!matches.length) {
       el.style.display = 'none';
       el.innerHTML = '';
       return;
     }
     el.style.display = '';
-    el.innerHTML = state.matches.map((m) => `
+    el.innerHTML = matches.map((m) => `
       <div class="match-line match-${m.side}">
         ✓ ${LABELS[m.from]} → ${LABELS[m.to]} <strong>${m.side === 'payer' ? 'Payer' : 'Receiver'}</strong>
         ${m.direct ? 'premium matches your quoted rates exactly.' : 'rates are consistent with the curve (no direct premium entered).'}
@@ -932,13 +1016,14 @@
   function renderMismatchBanner() {
     const el = document.getElementById('mismatchBanner');
     if (!el) return;
-    if (!state.mismatches.length) {
+    const mismatches = selectedPairEntries(state.mismatches);
+    if (!mismatches.length) {
       el.style.display = 'none';
       el.innerHTML = '';
       return;
     }
     el.style.display = '';
-    el.innerHTML = state.mismatches.map((m) => {
+    el.innerHTML = mismatches.map((m) => {
       const sideLabel = m.side === 'payer' ? 'Payer' : 'Receiver';
       const fixes = [];
       if (m.direct) fixes.push(`set the premium to <strong>${fmtTrim(m.actualDisplayPts)}</strong>`);
@@ -1163,6 +1248,7 @@
       state.premiumEntries = [];
       state.brokenDates = [];
       state.bigFigure = '';
+      state.selectedTenors = [];
       document.getElementById('bigFigureInput').value = '';
       recompute();
       renderRateTable();
