@@ -253,6 +253,7 @@
     state.anchorByNode = {};
     anchors.forEach((a) => { state.anchorByNode[a.node] = a; });
     state.tenorRelations = FXCalculator.computeTenorRelations(anchors, state.valueDates.days);
+    state.swapBest = computeSwapBest();
 
     // Match detection: a Premium Entry "confirms" against the board when
     // BOTH its endpoints also have a directly-typed Rate Entry (not a
@@ -380,7 +381,69 @@
     }
   }
 
-  /* ---------------- Draft persistence ---------------- */
+  /**
+   * For a tenor reachable through more than one direct Premium Entry
+   * (e.g. Cash→1M, Spot→1M, and Tom→1M all typed), the single graph
+   * solve only ever follows ONE of those paths — the rest are silently
+   * ignored for display purposes. This works out every direct-entry
+   * candidate for a given (chain, price) combination and keeps the best
+   * one: the LARGER value for a bid, the SMALLER value for an offer —
+   * since a higher bid or a lower offer is the more competitive price.
+   *
+   * chain is which premium (Payer or Receiver points) built the edge;
+   * price is which side of the resulting rate we're deriving (bid or
+   * offer). These are independent: e.g. a Payer-points chain run against
+   * an OFFER anchor (curve.payerOffer) is exactly how you'd build an
+   * offer price for an earlier tenor when only a future tenor's offer
+   * was ever typed — the bid chain has nothing to anchor to, but the
+   * offer chain does, and that's still a real, usable number.
+   *
+   * Each candidate is built from the OTHER tenor's own main-solve price
+   * shifted by that entry's premium, so this never recurses. The
+   * tenor's own single-path main-solve result is always included as one
+   * candidate too, so with only one connecting entry nothing changes.
+   */
+  function computeCandidateBest(t, chain, price) {
+    const curve = state.solved.curve;
+    const key = chain + (price === 'bid' ? 'Bid' : 'Offer'); // payerBid / payerOffer / receiverBid / receiverOffer
+    const candidates = [{ source: null, val: curve[t] ? curve[t][key] : null }];
+
+    state.premiumEntries.forEach((pe) => {
+      if (pe.from !== t && pe.to !== t) return;
+      const other = pe.from === t ? pe.to : pe.from;
+      const otherC = curve[other];
+      if (!otherC || !isNum(otherC[key])) return;
+      const prem = parsePremiumShorthand(pe.premium);
+      const rawVal = chain === 'payer' ? prem.payer : prem.receiver;
+      const edge = premiumToEdgeValue(pe.from, pe.to, rawVal, pe.perDay); // value from pe.from -> pe.to
+      if (!isNum(edge)) return;
+      const goingForward = pe.to === t; // true: other is earlier, edge adds onto other to reach t
+      const val = goingForward ? otherC[key] + edge : otherC[key] - edge;
+      candidates.push({ source: other, val });
+    });
+
+    let best = null;
+    candidates.forEach((cand) => {
+      if (!isNum(cand.val)) return;
+      if (!best || (price === 'bid' ? cand.val > best.val : cand.val < best.val)) best = cand;
+    });
+    return best ? { val: best.val, source: best.source } : { val: null, source: null };
+  }
+
+  function computeSwapBest() {
+    const best = {};
+    TENORS.forEach((t) => {
+      best[t] = {
+        payerBid: computeCandidateBest(t, 'payer', 'bid'),
+        payerOffer: computeCandidateBest(t, 'payer', 'offer'),
+        receiverBid: computeCandidateBest(t, 'receiver', 'bid'),
+        receiverOffer: computeCandidateBest(t, 'receiver', 'offer'),
+      };
+    });
+    return best;
+  }
+
+
   function loadDraft() {
     const draft = FXStorage.loadDraft();
     if (draft && draft.tradeDateKey === todayKey() && draft.rateEntries) {
@@ -618,8 +681,31 @@
     return (pts >= 0 ? '+' : '') + fmtTrim(pts);
   }
 
+  /**
+   * The ladder shows standard tenors AND any Odd/Broken Dates the dealer
+   * has added, merged into one list and sorted chronologically by real
+   * value date — so an odd date slots in exactly where it belongs in
+   * time (e.g. between 1M and 2M if that's where it falls), not bolted
+   * on at the end.
+   */
+  function buildDisplayRows() {
+    const rows = TENORS.map((t) => ({
+      key: t,
+      kind: 'tenor',
+      label: LABELS[t],
+      date: state.valueDates.dates[t],
+    }));
+    (state.brokenDates || []).forEach((bd) => {
+      const date = FXCalendar.parse(bd.dateStr);
+      rows.push({ key: `bd:${bd.id}`, kind: 'broken', label: fmtDateLabel(date), date, bd });
+    });
+    rows.sort((a, b) => a.date - b.date);
+    return rows;
+  }
+
   function buildLadderSVG(curve, matches, mismatches, anchorByNode, selectedTenors) {
-    const n = TENORS.length;
+    const rows = buildDisplayRows();
+    const n = rows.length;
     const rowH = 48;
     const slot = 62;
     const topPad = 26;
@@ -641,8 +727,8 @@
     svg += `<text x="${payerX}" y="14" class="ladder-heading">Payer</text>`;
     svg += `<text x="${receiverX + colW}" y="14" text-anchor="end" class="ladder-heading">Receiver</text>`;
 
-    TENORS.forEach((t, i) => {
-      const c = curve[t];
+    rows.forEach((row, i) => {
+      const t = row.key;
       const y = rowY(i);
       const cy = rowCenterY(i);
       const nameY = y + 17;
@@ -650,63 +736,146 @@
       const outrightY = y + 14;
       const swapY = y + 29;
       const premY = y + 43;
-      // Two separate price lines per tenor, so it's obvious how the deal
-      // was actually done:
-      //  - Outright: ONLY what the dealer directly typed as a Rate Entry
-      //    for this exact tenor — blank if nothing was typed here. This
-      //    is a real quoted outright, i.e. a deal that could be dealt as
-      //    an outright as-is.
-      //  - Swap: the price built purely from the Payer/Receiver premium
-      //    chain (today's payerBid / receiverOffer), regardless of
-      //    whether this tenor also has its own outright. This is the
-      //    price a swap deal (near-date rate + forward points) implies.
-      // When both are present and agree, the tenor is confirmed either
-      // way; when they disagree, that's a live mismatch (see banners).
-      const anchor = (anchorByNode || {})[t];
-      const outrightPayerVal = isNum(anchor && anchor.bid) ? fmtRatePairParts(anchor.bid, null)[0] : '';
-      const outrightReceiverVal = isNum(anchor && anchor.offer) ? fmtRatePairParts(null, anchor.offer)[1] : '';
-      // A node that IS the anchor for its own component (e.g. Spot with
-      // no premium entries touching it at all) mechanically solves back
-      // to exactly its own outright — that's not an independently
-      // "derived via swap points" price, it's just an echo. Only show
-      // the Swap line when it actually carries different information
-      // than the Outright line (a real chain result, or a genuine
-      // mismatch worth flagging) — never as a same-value duplicate.
-      let swapPayerVal = fmtRatePairParts(c.payerBid, null)[0];
-      let swapReceiverVal = fmtRatePairParts(null, c.receiverOffer)[1];
-      if (outrightPayerVal && outrightPayerVal === swapPayerVal) swapPayerVal = '';
-      if (outrightReceiverVal && outrightReceiverVal === swapReceiverVal) swapReceiverVal = '';
-      const payerPremLabel = fmtPremiumPts(c.payerPremium);
-      const receiverPremLabel = fmtPremiumPts(c.receiverPremium);
-      // Show the whole-number "Big Figure" actually in use for this
-      // tenor — whichever value is available — so it's obvious at a
-      // glance whether the auto-detected/refined figure looks right,
-      // without having to open Rate Entries to check.
-      const bigFigSource = isNum(anchor && anchor.bid) ? anchor.bid : (isNum(c.payerBid) ? c.payerBid : c.receiverOffer);
-      const bigFigLabel = isNum(bigFigSource) ? `BF ${Math.floor(bigFigSource)}` : '';
-      const spotClass = t === 'spot' ? ' ladder-row-spot' : '';
-      svg += `
-        <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
-        <text x="${payerX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
-        <text x="${payerX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
+
+      let rowLabel, outrightPayerVal, outrightReceiverVal, swapPayerVal, swapReceiverVal,
+        swapPayerIsFallback = false, swapReceiverIsFallback = false,
+        payerPremLabel, receiverPremLabel, bigFigLabel, rowExtraClass = '', showRelationsBtn = true;
+      let payerValForBracket = null, receiverValForBracket = null;
+
+      if (row.kind === 'tenor') {
+        const c = curve[t];
+        rowLabel = c.label;
+        // Two separate price lines per tenor, so it's obvious how the deal
+        // was actually done:
+        //  - Outright: ONLY what the dealer directly typed as a Rate Entry
+        //    for this exact tenor — blank if nothing was typed here. This
+        //    is a real quoted outright, i.e. a deal that could be dealt as
+        //    an outright as-is.
+        //  - Swap: the price built purely from the Payer/Receiver premium
+        //    chain (today's payerBid / receiverOffer), regardless of
+        //    whether this tenor also has its own outright. This is the
+        //    price a swap deal (near-date rate + forward points) implies.
+        // When both are present and agree, the tenor is confirmed either
+        // way; when they disagree, that's a live mismatch (see banners).
+        const anchor = (anchorByNode || {})[t];
+        const swapBest = (state.swapBest || {})[t] || {
+          payerBid: { val: c.payerBid, source: null },
+          payerOffer: { val: c.payerOffer, source: null },
+          receiverBid: { val: c.receiverBid, source: null },
+          receiverOffer: { val: c.receiverOffer, source: null },
+        };
+        outrightPayerVal = isNum(anchor && anchor.bid) ? fmtRatePairParts(anchor.bid, null)[0] : '';
+        outrightReceiverVal = isNum(anchor && anchor.offer) ? fmtRatePairParts(null, anchor.offer)[1] : '';
+        // A node that IS the anchor for its own component (e.g. Spot with
+        // no premium entries touching it at all) mechanically solves back
+        // to exactly its own outright — that's not an independently
+        // "derived via swap points" price, it's just an echo. Only show
+        // the Swap line when it actually carries different information
+        // than the Outright line (a real chain result, or a genuine
+        // mismatch worth flagging) — never as a same-value duplicate.
+        // When a tenor is reachable via more than one direct Premium Entry
+        // (e.g. Cash→1M, Spot→1M, Tom→1M all typed), swapBest already
+        // picked the best candidate per side — the larger Payer bid, the
+        // smaller Receiver offer — see computeSwapBest().
+        //
+        // The Payer column normally shows a BID (payerBid): the price
+        // built by chaining Payer points onto bid anchors. But if nothing
+        // ever typed a bid along that chain — only an OFFER somewhere
+        // (e.g. a future tenor's offer was typed, no bid) — the same
+        // Payer-points chain can still be run against OFFER anchors
+        // (payerOffer) and that's a perfectly real, usable number. So the
+        // Payer column falls back to the best payerOffer when no payerBid
+        // exists, marked "(ofr)" so it's clear it's an offer, not a bid.
+        // The Receiver column falls back the same way onto receiverBid,
+        // marked "(bid)".
+        swapPayerVal = fmtRatePairParts(swapBest.payerBid.val, null)[0];
+        if (!swapPayerVal && isNum(swapBest.payerOffer.val)) {
+          swapPayerVal = fmtRatePairParts(swapBest.payerOffer.val, null)[0] + ' (ofr)';
+          swapPayerIsFallback = true;
+        }
+        swapReceiverVal = fmtRatePairParts(null, swapBest.receiverOffer.val)[1];
+        if (!swapReceiverVal && isNum(swapBest.receiverBid.val)) {
+          swapReceiverVal = fmtRatePairParts(null, swapBest.receiverBid.val)[1] + ' (bid)';
+          swapReceiverIsFallback = true;
+        }
+        if (outrightPayerVal && outrightPayerVal === swapPayerVal) swapPayerVal = '';
+        if (outrightReceiverVal && outrightReceiverVal === swapReceiverVal) swapReceiverVal = '';
+        payerPremLabel = fmtPremiumPts(c.payerPremium);
+        receiverPremLabel = fmtPremiumPts(c.receiverPremium);
+        // Show the whole-number "Big Figure" actually in use for this
+        // tenor — whichever value is available — so it's obvious at a
+        // glance whether the auto-detected/refined figure looks right,
+        // without having to open Rate Entries to check.
+        const bigFigSource = isNum(anchor && anchor.bid) ? anchor.bid
+          : (isNum(swapBest.payerBid.val) ? swapBest.payerBid.val
+            : (isNum(swapBest.receiverOffer.val) ? swapBest.receiverOffer.val
+              : (isNum(swapBest.payerOffer.val) ? swapBest.payerOffer.val : swapBest.receiverBid.val)));
+        bigFigLabel = isNum(bigFigSource) ? `BF ${Math.floor(bigFigSource)}` : '';
+        rowExtraClass = t === 'spot' ? ' ladder-row-spot' : '';
+        payerValForBracket = c.payerBid;
+        receiverValForBracket = c.receiverOffer;
+      } else {
+        // Odd/Broken Date row — same Outright/Swap-style two-line format
+        // as a standard tenor, just sourced differently: Outright is a
+        // typed Rate on that Broken Date row, "Swap" here is really the
+        // auto-interpolated figure (labeled "(interp)"), and there's no
+        // 🔗 relations link since it isn't part of the premium graph.
+        const bd = row.bd;
+        rowLabel = row.label;
+        const typed = parseRateShorthand(bd.rate, parseFloat(state.bigFigure));
+        const hasTypedPayer = isNum(typed.bid);
+        const hasTypedReceiver = isNum(typed.offer);
+        const result = FXCalculator.interpolateBrokenDate(curve, row.date, state.valueDates.spot);
+        const interpPayer = isNum(state.solved.payerSpotBid) && result && isNum(result.payerPremium)
+          ? state.solved.payerSpotBid + result.payerPremium : null;
+        const interpReceiver = isNum(state.solved.receiverSpotOffer) && result && isNum(result.receiverPremium)
+          ? state.solved.receiverSpotOffer + result.receiverPremium : null;
+        const payerUsed = hasTypedPayer ? typed.bid : interpPayer;
+        const receiverUsed = hasTypedReceiver ? typed.offer : interpReceiver;
+
+        outrightPayerVal = hasTypedPayer ? fmtRatePairParts(typed.bid, null)[0] : '';
+        outrightReceiverVal = hasTypedReceiver ? fmtRatePairParts(null, typed.offer)[1] : '';
+        swapPayerVal = (!hasTypedPayer && isNum(interpPayer)) ? fmtRatePairParts(interpPayer, null)[0] + ' (interp)' : '';
+        swapReceiverVal = (!hasTypedReceiver && isNum(interpReceiver)) ? fmtRatePairParts(null, interpReceiver)[1] + ' (interp)' : '';
+        if (swapPayerVal) swapPayerIsFallback = true;
+        if (swapReceiverVal) swapReceiverIsFallback = true;
+        payerPremLabel = (isNum(payerUsed) && isNum(state.solved.payerSpotBid)) ? fmtPremiumPts(payerUsed - state.solved.payerSpotBid) : '';
+        receiverPremLabel = (isNum(receiverUsed) && isNum(state.solved.receiverSpotOffer)) ? fmtPremiumPts(receiverUsed - state.solved.receiverSpotOffer) : '';
+        const bigFigSource = isNum(payerUsed) ? payerUsed : receiverUsed;
+        bigFigLabel = isNum(bigFigSource) ? `ODD · BF ${Math.floor(bigFigSource)}` : 'ODD';
+        rowExtraClass = ' ladder-row-broken';
+        showRelationsBtn = false;
+        payerValForBracket = payerUsed;
+        receiverValForBracket = receiverUsed;
+      }
+      row.payerVal = payerValForBracket;
+      row.receiverVal = receiverValForBracket;
+
+      const relationsBtn = showRelationsBtn ? `
+        <circle cx="${(payerRailX + receiverRailX) / 2}" cy="${cy}" r="7" class="ladder-relations-btn${(selectedTenors || []).includes(t) ? ' active' : ''}" data-tenor="${t}"></circle>
+        <text x="${(payerRailX + receiverRailX) / 2}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-relations-glyph" pointer-events="none">🔗</text>` : '';
+      const editRects = showRelationsBtn ? `
         <rect x="${payerX + colW - 110}" y="${y}" width="106" height="18" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="payer"></rect>
+        <rect x="${receiverX + colW - 110}" y="${y}" width="106" height="18" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="receiver"></rect>` : '';
+      svg += `
+        <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${rowExtraClass}"></rect>
+        <text x="${payerX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${rowLabel}</text>
+        <text x="${payerX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
         <text x="${payerX + colW - 8}" y="${outrightY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-outright" pointer-events="none">${outrightPayerVal}</text>
-        <text x="${payerX + colW - 8}" y="${swapY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid ladder-val-swap">${swapPayerVal}</text>
+        <text x="${payerX + colW - 8}" y="${swapY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid ladder-val-swap${swapPayerIsFallback ? ' ladder-val-swap-cross' : ''}">${swapPayerVal}</text>
         <text x="${payerX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${payerPremLabel}</text>
 
-        <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${spotClass}"></rect>
-        <text x="${receiverX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${c.label}</text>
+        <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${rowExtraClass}"></rect>
+        <text x="${receiverX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${rowLabel}</text>
         <text x="${receiverX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
-        <rect x="${receiverX + colW - 110}" y="${y}" width="106" height="18" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="receiver"></rect>
         <text x="${receiverX + colW - 8}" y="${outrightY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-outright" pointer-events="none">${outrightReceiverVal}</text>
-        <text x="${receiverX + colW - 8}" y="${swapY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-offer ladder-val-swap">${swapReceiverVal}</text>
+        <text x="${receiverX + colW - 8}" y="${swapY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-offer ladder-val-swap${swapReceiverIsFallback ? ' ladder-val-swap-cross' : ''}">${swapReceiverVal}</text>
         <text x="${receiverX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${receiverPremLabel}</text>
-
+        ${editRects}
 
         <line x1="${payerX + colW}" y1="${cy}" x2="${payerRailX}" y2="${cy}" class="ladder-tick"></line>
         <line x1="${receiverRailX}" y1="${cy}" x2="${receiverX}" y2="${cy}" class="ladder-tick"></line>
-        <circle cx="${(payerRailX + receiverRailX) / 2}" cy="${cy}" r="7" class="ladder-relations-btn${(selectedTenors || []).includes(t) ? ' active' : ''}" data-tenor="${t}"></circle>
-        <text x="${(payerRailX + receiverRailX) / 2}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-relations-glyph" pointer-events="none">🔗</text>
+        ${relationsBtn}
       `;
     });
 
@@ -714,11 +883,11 @@
     svg += `<line x1="${receiverRailX}" y1="${rowCenterY(0)}" x2="${receiverRailX}" y2="${rowCenterY(n - 1)}" class="ladder-rail"></line>`;
 
     for (let i = 0; i < n - 1; i++) {
-      const a = curve[TENORS[i]];
-      const b = curve[TENORS[i + 1]];
+      const a = rows[i];
+      const b = rows[i + 1];
       const midY = (rowCenterY(i) + rowCenterY(i + 1)) / 2;
-      const payerPrem = isNum(a.payerBid) && isNum(b.payerBid) ? fmtTrim((b.payerBid - a.payerBid) * 100) : '—';
-      const receiverPrem = isNum(a.receiverOffer) && isNum(b.receiverOffer) ? fmtTrim((b.receiverOffer - a.receiverOffer) * 100) : '—';
+      const payerPrem = isNum(a.payerVal) && isNum(b.payerVal) ? fmtTrim((b.payerVal - a.payerVal) * 100) : '—';
+      const receiverPrem = isNum(a.receiverVal) && isNum(b.receiverVal) ? fmtTrim((b.receiverVal - a.receiverVal) * 100) : '—';
       svg += `<text x="${payerRailX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium">${payerPrem}</text>`;
       svg += `<text x="${receiverRailX - 6}" y="${midY}" text-anchor="end" dominant-baseline="central" class="ladder-premium">${receiverPrem}</text>`;
     }
@@ -759,12 +928,13 @@
     // detail message (total + per-day, Payer & Receiver) is rendered
     // separately, below the ladder, by renderPairDetail().
     if (selectedTenors && selectedTenors.length === 2) {
-      const rawIdxA = TENORS.indexOf(selectedTenors[0]);
-      const rawIdxB = TENORS.indexOf(selectedTenors[1]);
+      const rowKeys = rows.map((r) => r.key);
+      const rawIdxA = rowKeys.indexOf(selectedTenors[0]);
+      const rawIdxB = rowKeys.indexOf(selectedTenors[1]);
       if (rawIdxA !== -1 && rawIdxB !== -1 && rawIdxA !== rawIdxB) {
         const [fromNode, toNode] = rawIdxA < rawIdxB ? [selectedTenors[0], selectedTenors[1]] : [selectedTenors[1], selectedTenors[0]];
-        const fromIdx = TENORS.indexOf(fromNode);
-        const toIdx = TENORS.indexOf(toNode);
+        const fromIdx = rowKeys.indexOf(fromNode);
+        const toIdx = rowKeys.indexOf(toNode);
         const samePair = (m) => (m.from === fromNode && m.to === toNode) || (m.from === toNode && m.to === fromNode);
 
         ['payer', 'receiver'].forEach((side) => {
@@ -812,26 +982,40 @@
 
   /**
    * Works out the Payer / Receiver total premium + per-day between the
-   * two directly-typed Rate Entries the dealer has picked with the 🔗
-   * button, in chronological order. Returns null if either tenor has no
-   * typed rate at all yet.
+   * two tenors the dealer has picked with the 🔗 button, in chronological
+   * order — using whatever price each tenor actually has (a typed
+   * Outright if one exists, otherwise its chain-derived Swap price).
+   * This is what lets a pair like Cash → 1 Week work even when Cash was
+   * never typed directly, only reached via a premium chain off Spot.
+   * Returns null if either tenor has no price at all yet (unconnected
+   * and untyped).
    */
   function computePairDetail(fromNode, toNode) {
+    const curve = state.solved.curve;
     const anchorByNode = state.anchorByNode || {};
+    const cFrom = curve[fromNode];
+    const cTo = curve[toNode];
+    if (!cFrom || !cTo) return null;
+    const priceOf = (c, anchor, key) => (isNum(anchor && anchor[key]) ? anchor[key] : c[key === 'bid' ? 'payerBid' : 'receiverOffer']);
     const fromA = anchorByNode[fromNode];
     const toA = anchorByNode[toNode];
-    if (!fromA || !toA) return null;
     const days = state.valueDates.days[toNode] - state.valueDates.days[fromNode];
+
     let payer = null;
-    if (isNum(fromA.bid) && isNum(toA.bid)) {
-      const total = (toA.bid - fromA.bid) * 100;
+    const fromBid = priceOf(cFrom, fromA, 'bid');
+    const toBid = priceOf(cTo, toA, 'bid');
+    if (isNum(fromBid) && isNum(toBid)) {
+      const total = (toBid - fromBid) * 100;
       payer = { total, perDay: days !== 0 ? total / days : null };
     }
     let receiver = null;
-    if (isNum(fromA.offer) && isNum(toA.offer)) {
-      const total = (toA.offer - fromA.offer) * 100;
+    const fromOffer = priceOf(cFrom, fromA, 'offer');
+    const toOffer = priceOf(cTo, toA, 'offer');
+    if (isNum(fromOffer) && isNum(toOffer)) {
+      const total = (toOffer - fromOffer) * 100;
       receiver = { total, perDay: days !== 0 ? total / days : null };
     }
+    if (!payer && !receiver) return null;
     return { fromNode, toNode, days, payer, receiver };
   }
 
@@ -868,7 +1052,7 @@
     el.style.display = '';
 
     if (!detail || (!detail.payer && !detail.receiver)) {
-      el.innerHTML = `<div class="pair-detail-empty">${LABELS[fromNode]} → ${LABELS[toNode]}: type a Rate for both tenors to see the premium here.</div>`;
+      el.innerHTML = `<div class="pair-detail-empty">${LABELS[fromNode]} → ${LABELS[toNode]}: no rate or premium chain connects these two yet.</div>`;
       return;
     }
 
@@ -915,8 +1099,19 @@
           sel.splice(pos, 1); // clicking an already-selected tenor deselects it
         } else if (sel.length >= 2) {
           state.selectedTenors = [tenor]; // a 3rd click starts a fresh pair, this tenor as the new anchor
+        } else if (sel.length === 0) {
+          // First click: if this tenor's Swap price actually came from a
+          // specific other tenor (the winning candidate in swapBest),
+          // auto-select that pair immediately — no need to hunt for and
+          // click the 2nd tenor by hand to see how the best rate was built.
+          const best = (state.swapBest || {})[tenor] || {};
+          const autoSource = (best.payerBid && best.payerBid.source)
+            || (best.receiverOffer && best.receiverOffer.source)
+            || (best.payerOffer && best.payerOffer.source)
+            || (best.receiverBid && best.receiverBid.source);
+          state.selectedTenors = autoSource ? [tenor, autoSource] : [tenor];
         } else {
-          sel.push(tenor); // 1st click = anchor, 2nd click = compare
+          sel.push(tenor); // 2nd click on a different tenor = manual compare
         }
         renderQuoteScreen();
       });
@@ -1016,8 +1211,7 @@
     el.style.display = '';
     el.innerHTML = matches.map((m) => `
       <div class="match-line match-${m.side}">
-        ✓ ${LABELS[m.from]} → ${LABELS[m.to]} <strong>${m.side === 'payer' ? 'Payer' : 'Receiver'}</strong>
-        ${m.direct ? 'premium matches your quoted rates exactly.' : 'rates are consistent with the curve (no direct premium entered).'}
+        ✓ ${LABELS[m.from]}→${LABELS[m.to]} ${m.side === 'payer' ? 'Payer' : 'Receiver'}
       </div>
     `).join('');
   }
@@ -1034,15 +1228,14 @@
     el.style.display = '';
     el.innerHTML = mismatches.map((m) => {
       const sideLabel = m.side === 'payer' ? 'Payer' : 'Receiver';
-      const fixes = [];
-      if (m.direct) fixes.push(`set the premium to <strong>${fmtTrim(m.actualDisplayPts)}</strong>`);
-      if (m.toSuitable) fixes.push(`set ${LABELS[m.to]} to <strong>${fmtNum(m.suggestedToRate)}</strong>`);
-      if (m.fromSuitable) fixes.push(`set ${LABELS[m.from]} to <strong>${fmtNum(m.suggestedFromRate)}</strong>`);
-      const fixText = fixes.length ? fixes.join(', or ') : "these two rates don't reconcile through the curve";
-      const chainNote = m.direct ? '' : ' <span class="small-text">(via the curve, no direct premium entered)</span>';
+      const parts = [];
+      if (m.direct) parts.push(`Δ${fmtTrim(m.actualDisplayPts)}${m.unitLabel || 'p'}`);
+      if (m.toSuitable) parts.push(`${LABELS[m.to]} ${fmtNum(m.suggestedToRate)}`);
+      if (m.fromSuitable) parts.push(`${LABELS[m.from]} ${fmtNum(m.suggestedFromRate)}`);
+      const text = parts.length ? parts.join(' / ') : '—';
       return `
       <div class="match-line mismatch-${m.side} mismatch-big">
-        ⚠ ${LABELS[m.from]} → ${LABELS[m.to]} ${sideLabel}: ${fixText}.${chainNote}
+        ⚠ ${LABELS[m.from]}→${LABELS[m.to]} ${sideLabel}: ${text}
       </div>`;
     }).join('');
   }
@@ -1062,22 +1255,37 @@
         const result = FXCalculator.interpolateBrokenDate(state.solved.curve, targetDate, state.valueDates.spot);
         const tr = document.createElement('tr');
         const dateInputCell = `<td><input type="text" class="cell-input" style="width:110px;" placeholder="DD-MM-YYYY" data-broken-date-id="${bd.id}" value="${isoToDisplayDate(bd.dateStr)}"></td>`;
-        if (!result) {
+        const rateInputCell = `<td><input type="text" class="cell-input shorthand" style="width:90px;" placeholder="typed rate" data-broken-rate-id="${bd.id}" value="${bd.rate || ''}"></td>`;
+
+        // A typed Rate on a broken date is a real Outright, just like a
+        // typed Rate Entry — it always wins over the auto-interpolated
+        // figure. No Rate typed yet? Fall back to interpolation as before.
+        const typedBF = parseFloat(state.bigFigure);
+        const typed = parseRateShorthand(bd.rate, typedBF);
+        const hasTypedPayer = isNum(typed.bid);
+        const hasTypedReceiver = isNum(typed.offer);
+
+        if (!result && !hasTypedPayer && !hasTypedReceiver) {
           tr.innerHTML = `
             ${dateInputCell}
-            <td colspan="3" class="val-muted">Need at least 2 solved tenors to interpolate</td>
+            ${rateInputCell}
+            <td colspan="3" class="val-muted">Need at least 2 solved tenors to interpolate, or type a Rate</td>
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
         } else {
-          const payerRate = isNum(state.solved.payerSpotBid) && isNum(result.payerPremium)
+          const interpPayer = isNum(state.solved.payerSpotBid) && result && isNum(result.payerPremium)
             ? state.solved.payerSpotBid + result.payerPremium : null;
-          const receiverRate = isNum(state.solved.receiverSpotOffer) && isNum(result.receiverPremium)
+          const interpReceiver = isNum(state.solved.receiverSpotOffer) && result && isNum(result.receiverPremium)
             ? state.solved.receiverSpotOffer + result.receiverPremium : null;
+          const payerRate = hasTypedPayer ? typed.bid : interpPayer;
+          const receiverRate = hasTypedReceiver ? typed.offer : interpReceiver;
+          const daysLabel = result ? result.days : FXCalendar.calendarDaysBetween(state.valueDates.spot, targetDate);
           tr.innerHTML = `
             ${dateInputCell}
-            <td class="mono">${result.days}</td>
-            <td class="mono val-bid">${fmtNum(payerRate)}</td>
-            <td class="mono val-offer">${fmtNum(receiverRate)}</td>
+            ${rateInputCell}
+            <td class="mono">${daysLabel}</td>
+            <td class="mono ${hasTypedPayer ? 'val-outright' : 'val-bid'}">${fmtNum(payerRate)}${hasTypedPayer ? '' : ' (interp)'}</td>
+            <td class="mono ${hasTypedReceiver ? 'val-outright' : 'val-offer'}">${fmtNum(receiverRate)}${hasTypedReceiver ? '' : ' (interp)'}</td>
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
         }
@@ -1092,6 +1300,18 @@
         if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); renderBrokenDates(); return; }
         entry.dateStr = iso;
         renderBrokenDates();
+        renderQuoteScreen();
+        scheduleSaveDraft();
+      });
+    });
+
+    tbody.querySelectorAll('[data-broken-rate-id]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const entry = state.brokenDates.find((e) => e.id === Number(input.dataset.brokenRateId));
+        if (!entry) return;
+        entry.rate = input.value;
+        renderBrokenDates();
+        renderQuoteScreen();
         scheduleSaveDraft();
       });
     });
@@ -1100,6 +1320,7 @@
       btn.addEventListener('click', () => {
         state.brokenDates = state.brokenDates.filter((e) => e.id !== Number(btn.dataset.removeBroken));
         renderBrokenDates();
+        renderQuoteScreen();
         scheduleSaveDraft();
       });
     });
@@ -1245,9 +1466,10 @@
       if (!input.value.trim()) { alert('Type a date first, e.g. 15-09-2026.'); return; }
       const iso = parseFlexibleDateToISO(input.value);
       if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); return; }
-      state.brokenDates.push({ id: nextBrokenDateId++, dateStr: iso });
+      state.brokenDates.push({ id: nextBrokenDateId++, dateStr: iso, rate: '' });
       input.value = '';
       renderBrokenDates();
+      renderQuoteScreen();
       scheduleSaveDraft();
     });
 
