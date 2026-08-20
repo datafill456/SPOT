@@ -12,11 +12,13 @@
   .ladder-heading { font-size: 12px; font-weight: 700; fill: var(--text-dim, #888); text-transform: uppercase; letter-spacing: 0.05em; }
   .ladder-row { fill: var(--panel-alt, rgba(128,128,128,0.06)); stroke: var(--border, rgba(128,128,128,0.25)); stroke-width: 0.5; }
   .ladder-row-spot { stroke: var(--accent, #888); stroke-width: 1; }
+  .ladder-row-broken { stroke: var(--amber, #ffb020); stroke-width: 1; stroke-dasharray: 4 3; }
   .ladder-tenor { font-size: 12px; fill: var(--text, currentColor); }
   .ladder-bigfig { font-size: 9px; fill: var(--text-muted, #7c8797); font-family: 'IBM Plex Mono', monospace; }
   .ladder-val { font-size: 13px; font-weight: 600; }
-  .val-outright { fill: var(--amber, #ffb020); font-weight: 700; }
+  .val-outright { fill: var(--amber, #ffb020); color: var(--amber, #ffb020); font-weight: 700; }
   .ladder-val-swap { font-size: 11px; font-weight: 600; opacity: 0.9; }
+  .ladder-val-swap-cross { fill: var(--blue, #4da3ff); font-style: italic; font-weight: 600; }
   .val-bid { fill: var(--green, #3ba55d); }
   .val-offer { fill: var(--red, #d9534f); }
   .ladder-tick { stroke: var(--border, rgba(128,128,128,0.35)); stroke-width: 0.75; }
@@ -141,10 +143,10 @@
   </div>
 
   <div class="card">
-    <h2>Odd / Broken Date <span class="hint">Any custom value date — interpolated between the two nearest solved tenors</span></h2>
+    <h2>Odd / Broken Date <span class="hint">Any custom value date — type a Rate for a real outright, or leave blank to auto-interpolate between the two nearest solved tenors</span></h2>
     <div style="overflow-x:auto;">
       <table class="dealer" id="brokenDateTable">
-        <thead><tr><th>Date</th><th>Days from Spot</th><th>Payer Rate</th><th>Receiver Rate</th><th></th></tr></thead>
+        <thead><tr><th>Date</th><th>Rate</th><th>Days from Spot</th><th>Payer Rate</th><th>Receiver Rate</th><th></th></tr></thead>
         <tbody id="brokenDateTableBody"></tbody>
       </table>
     </div>
@@ -155,7 +157,7 @@
   </div>
 
   <div class="card">
-    <h2>Dealer Quote Screen <span class="hint">Live · read-only · amber = Outright (a rate you typed directly for that tenor) · green/red = Swap (built purely from the Payer/Receiver premium chain) · Payer sells near @ bid / buys back far @ bid + Payer premium · Receiver buys near @ offer / sells back far @ offer + Receiver premium · brackets show the premium between every consecutive tenor · glowing bar = a typed premium is confirmed by your typed rates at both ends · click 🔗 on two tenors to compare that exact pair below</span></h2>
+    <h2>Dealer Quote Screen <span class="hint">Live · read-only · amber = Outright (a rate you typed directly for that tenor) · green/red = Swap (best of every direct premium chain reaching that tenor — highest Payer bid, lowest Receiver offer) · italic blue "(ofr)"/"(bid)" = no bid/offer was directly derivable, so the best price from the OTHER side of that same chain is shown instead · dashed-amber row = an Odd/Broken Date, slotted in by real value date, showing its typed Rate or "(interp)" if none was typed · Payer sells near @ bid / buys back far @ bid + Payer premium · Receiver buys near @ offer / sells back far @ offer + Receiver premium · brackets show the premium between every consecutive row · glowing bar = a typed premium is confirmed by your typed rates at both ends · click 🔗 once to auto-show the pair behind that tenor's best Swap rate, or click a 2nd tenor to compare any pair manually</span></h2>
     <div id="matchBanner" style="display:none;"></div>
     <div id="mismatchBanner" style="display:none;"></div>
     <div id="quoteLadderWrap" style="overflow-x:auto;"></div>
