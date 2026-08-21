@@ -729,48 +729,52 @@
     const bidStr = isNum(bidCand && bidCand.val) ? fmtRatePairParts(bidCand.val, null)[0] : '';
     const offerStr = isNum(offerCand && offerCand.val) ? fmtRatePairParts(null, offerCand.val)[1] : '';
     if (!bidStr && !offerStr) return '';
-    const bidClass = bidCand && bidCand.source === 'outright' ? 'val-outright' : 'val-bid';
-    const offerClass = offerCand && offerCand.source === 'outright' ? 'val-outright' : 'val-offer';
+    // Colour now signals SOURCE, not bid-vs-offer (position in the pair
+    // already shows that) — green for a rate you typed directly
+    // (Outright), yellow for a price the solver created from the
+    // premium chain, so it's obvious at a glance which numbers are real
+    // quotes and which are computed.
+    const bidClass = bidCand && bidCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
+    const offerClass = offerCand && offerCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
     return `<tspan class="${bidClass}">${bidStr}</tspan><tspan class="ladder-val-slash">/</tspan><tspan class="${offerClass}">${offerStr}</tspan>`;
   }
 
   function buildLadderSVG(curve, matches, mismatches, anchorByNode, selectedTenors) {
     const rows = buildDisplayRows();
     const n = rows.length;
-    const rowH = 48;
-    const slot = 62;
-    const topPad = 26;
-    const height = topPad + n * slot + 14;
+    const rowH = 34;
+    const slot = 44;
+    const topPad = 20;
+    const height = topPad + n * slot + 12;
 
-    const colW = 210;
+    const colW = 170;
     const payerX = 4;
-    const payerRailX = payerX + colW + 26;
-    const receiverX = 616 - colW;
-    const receiverRailX = receiverX - 26;
+    const payerRailX = payerX + colW + 20;
+    const receiverX = 520 - colW;
+    const receiverRailX = receiverX - 20;
     const diffX = (payerRailX + receiverRailX) / 2;
-    const matchPayerX = payerRailX + 18;
-    const matchReceiverX = receiverRailX - 18;
+    const matchPayerX = payerRailX + 14;
+    const matchReceiverX = receiverRailX - 14;
 
     const rowY = (i) => topPad + i * slot;
     const rowCenterY = (i) => rowY(i) + rowH / 2;
 
-    let svg = `<svg class="ladder-svg" viewBox="0 0 620 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
-    svg += `<text x="${payerX}" y="14" class="ladder-heading">Payer</text>`;
-    svg += `<text x="${receiverX + colW}" y="14" text-anchor="end" class="ladder-heading">Receiver</text>`;
+    let svg = `<svg class="ladder-svg" viewBox="0 0 520 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
+    svg += `<text x="${payerX}" y="12" class="ladder-heading">Payer</text>`;
+    svg += `<text x="${receiverX + colW}" y="12" text-anchor="end" class="ladder-heading">Receiver</text>`;
 
     rows.forEach((row, i) => {
       const t = row.key;
       const y = rowY(i);
       const cy = rowCenterY(i);
-      const nameY = y + 17;
-      const bigfigY = y + 33;
-      const outrightY = y + 14;
-      const swapY = y + 29;
-      const premY = y + 43;
+      const nameY = y + 12;
+      const bigfigY = y + 23;
+      const outrightY = y + 10;
+      const swapY = y + 21;
+      const premY = y + 30;
 
       let rowLabel, priceLinePayer, priceLineReceiver,
         payerIsChainDerived = false, receiverIsChainDerived = false,
-        payerIsCrossFallback = false, receiverIsCrossFallback = false,
         payerPremLabel, receiverPremLabel, bigFigLabel, rowExtraClass = '', showRelationsBtn = true;
       let payerValForBracket = null, receiverValForBracket = null;
 
@@ -853,16 +857,16 @@
         <circle cx="${(payerRailX + receiverRailX) / 2}" cy="${cy}" r="7" class="ladder-relations-btn${(selectedTenors || []).includes(t) ? ' active' : ''}" data-tenor="${t}"></circle>
         <text x="${(payerRailX + receiverRailX) / 2}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-relations-glyph" pointer-events="none">🔗</text>` : '';
       const editRects = showRelationsBtn ? `
-        <rect x="${payerX + colW - 110}" y="${y + 4}" width="106" height="28" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="payer"></rect>
-        <rect x="${receiverX + colW - 110}" y="${y + 4}" width="106" height="28" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="receiver"></rect>` : '';
+        <rect x="${payerX + colW - 90}" y="${y + 2}" width="86" height="20" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="payer"></rect>
+        <rect x="${receiverX + colW - 90}" y="${y + 2}" width="86" height="20" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="receiver"></rect>` : '';
       // Standard tenors show ONE merged price line, vertically centered
       // between the old outright/swap slots. Broken dates still show two
       // (Outright typed / interpolated estimate — genuinely different
       // kinds of numbers, see comment above).
       const payerLineY = row.kind === 'tenor' ? (outrightY + swapY) / 2 : outrightY;
       const receiverLineY = payerLineY;
-      const outerPayerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${payerIsChainDerived ? 'val-bid ladder-val-swap' : 'val-outright'}${payerIsCrossFallback ? ' ladder-val-swap-cross' : ''}`;
-      const outerReceiverClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${receiverIsChainDerived ? 'val-offer ladder-val-swap' : 'val-outright'}${receiverIsCrossFallback ? ' ladder-val-swap-cross' : ''}`;
+      const outerPayerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${payerIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
+      const outerReceiverClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${receiverIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
       svg += `
         <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${rowExtraClass}"></rect>
         <text x="${payerX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${rowLabel}</text>
@@ -1108,11 +1112,7 @@
           // specific other tenor (the winning candidate in swapBest),
           // auto-select that pair immediately — no need to hunt for and
           // click the 2nd tenor by hand to see how the best rate was built.
-          const best = (state.swapBest || {})[tenor] || {};
-          const autoSource = (best.payerBid && best.payerBid.source)
-            || (best.receiverOffer && best.receiverOffer.source)
-            || (best.payerOffer && best.payerOffer.source)
-            || (best.receiverBid && best.receiverBid.source);
+          const autoSource = autoLinkSourceFor(tenor);
           state.selectedTenors = autoSource ? [tenor, autoSource] : [tenor];
         } else {
           sel.push(tenor); // 2nd click on a different tenor = manual compare
@@ -1125,23 +1125,23 @@
   function openLadderEditor(targetEl, wrap) {
     if (wrap.querySelector('.ladder-edit-input')) return; // one editor at a time
     const tenor = targetEl.dataset.tenor;
-    const side = targetEl.dataset.side;
     const rect = targetEl.getBoundingClientRect();
     const wrapRect = wrap.getBoundingClientRect();
 
+    // One editor edits the WHOLE rate — both bid and offer together, same
+    // shorthand as the Rate Entries table ("50/60", "75/", "/75") — since
+    // both sides live on the same underlying Rate Entry regardless of
+    // which column (Payer/Receiver) was clicked to open it.
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'cell-input ladder-edit-input';
-    const anchor = (state.anchorByNode || {})[tenor];
-    const anchorVal = anchor && isNum(anchor[side === 'payer' ? 'bid' : 'offer']) ? anchor[side === 'payer' ? 'bid' : 'offer'] : null;
-    const current = anchorVal !== null
-      ? fmtRatePairParts(side === 'payer' ? anchorVal : null, side === 'receiver' ? anchorVal : null)[side === 'payer' ? 0 : 1]
-      : '';
-    input.value = current;
+    const entry = state.rateEntries.find((e) => e.node === tenor);
+    input.placeholder = '30/40';
+    input.value = entry ? entry.rate : '';
     input.style.position = 'absolute';
-    input.style.left = `${rect.left - wrapRect.left - 60}px`;
+    input.style.left = `${rect.left - wrapRect.left - 20}px`;
     input.style.top = `${rect.top - wrapRect.top - 4}px`;
-    input.style.width = '70px';
+    input.style.width = '90px';
     input.style.zIndex = '5';
 
     wrap.appendChild(input);
@@ -1154,9 +1154,7 @@
       done = true;
       const raw = input.value.trim();
       input.remove();
-      // Clearing the field to empty is a real edit too — it should erase
-      // that side of the typed rate, not silently keep the old value.
-      applyLadderEdit(tenor, side, raw);
+      applyLadderEdit(tenor, raw);
     }
     function cancel() {
       if (done) return;
@@ -1170,26 +1168,33 @@
     input.addEventListener('blur', commit);
   }
 
-  function applyLadderEdit(tenor, side, raw) {
+  /** Same "which tenor produced the best price" logic as the 🔗 button, reused so editing a rate also reveals where a created price is coming from. */
+  function autoLinkSourceFor(tenor) {
+    const best = (state.swapBest || {})[tenor] || {};
+    return (best.payerBid && best.payerBid.source)
+      || (best.receiverOffer && best.receiverOffer.source)
+      || (best.payerOffer && best.payerOffer.source)
+      || (best.receiverBid && best.receiverBid.source);
+  }
+
+  function applyLadderEdit(tenor, raw) {
     let entry = state.rateEntries.find((e) => e.node === tenor);
-    if (!entry) {
-      if (!raw) return; // cleared a field that had no Rate Entry anyway — nothing to do
-      entry = { id: nextRateId++, node: tenor, rate: '' };
-      state.rateEntries.push(entry);
-    }
-    const parts = (entry.rate || '').split('/');
-    const bidPart = (parts[0] || '').trim();
-    const offerPart = (parts.length > 1 ? parts[1] : '').trim();
-    const newBid = side === 'payer' ? raw : bidPart;
-    const newOffer = side === 'receiver' ? raw : offerPart;
-    entry.rate = `${newBid}/${newOffer}`;
-    if (!newBid && !newOffer) {
-      // Both sides are now blank — drop the Rate Entry entirely so the
-      // Outright line, Big Figure, and match/mismatch checks for this
-      // tenor all clear completely instead of leaving a stale "/" row.
-      state.rateEntries = state.rateEntries.filter((e) => e.id !== entry.id);
+    if (!raw) {
+      // Cleared entirely — drop the Rate Entry so the row falls back
+      // cleanly to whatever the premium chain can build, if anything.
+      if (entry) state.rateEntries = state.rateEntries.filter((e) => e.id !== entry.id);
+    } else if (entry) {
+      entry.rate = raw;
+    } else {
+      state.rateEntries.push({ id: nextRateId++, node: tenor, rate: raw });
     }
     recompute();
+    // Show where this tenor's price is coming from right away — same
+    // auto-link the 🔗 button does on first click — so editing a rate
+    // immediately reveals the source curve instead of requiring a
+    // separate click afterward.
+    const autoSource = autoLinkSourceFor(tenor);
+    state.selectedTenors = autoSource ? [tenor, autoSource] : [tenor];
     renderRateTable();
     renderDownstream();
     scheduleSaveDraft();
@@ -1288,8 +1293,8 @@
             ${dateInputCell}
             ${rateInputCell}
             <td class="mono">${daysLabel}</td>
-            <td class="mono ${hasTypedPayer ? 'val-outright' : 'val-bid'}">${fmtNum(payerRate)}${hasTypedPayer ? '' : ' (interp)'}</td>
-            <td class="mono ${hasTypedReceiver ? 'val-outright' : 'val-offer'}">${fmtNum(receiverRate)}${hasTypedReceiver ? '' : ' (interp)'}</td>
+            <td class="mono ${hasTypedPayer ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(payerRate)}${hasTypedPayer ? '' : ' (interp)'}</td>
+            <td class="mono ${hasTypedReceiver ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(receiverRate)}${hasTypedReceiver ? '' : ' (interp)'}</td>
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
         }
