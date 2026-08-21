@@ -151,13 +151,13 @@
     return { bid: bidRaw, offer: offerRaw };
   }
 
-  /** "5/5.5" -> {payer:5, receiver:5.5}, literal (no big-figure scaling). Single value applies to both sides. */
+  /** "5/5.5" -> {payer:5, receiver:5.5}, literal (no big-figure scaling). A single value with NO slash means only a Payer premium was actually quoted — it is NOT duplicated onto Receiver. */
   function parsePremiumShorthand(str) {
     const empty = { payer: null, receiver: null };
     if (!str || !str.trim()) return empty;
     const parts = str.split('/').map((s) => s.trim());
     const resolve = (p) => { const v = parseFloat(p); return isFinite(v) ? v : null; };
-    if (parts.length === 1) { const v = resolve(parts[0]); return { payer: v, receiver: v }; }
+    if (parts.length === 1) { const v = resolve(parts[0]); return { payer: v, receiver: null }; }
     return { payer: resolve(parts[0]), receiver: resolve(parts[1]) };
   }
 
@@ -775,31 +775,28 @@
         // mismatch worth flagging) — never as a same-value duplicate.
         // When a tenor is reachable via more than one direct Premium Entry
         // (e.g. Cash→1M, Spot→1M, Tom→1M all typed), swapBest already
-        // picked the best candidate per side — the larger Payer bid, the
-        // smaller Receiver offer — see computeSwapBest().
+        // picked the best candidate per side — the larger bid, the
+        // smaller offer — see computeSwapBest().
         //
-        // The Payer column normally shows a BID (payerBid): the price
-        // built by chaining Payer points onto bid anchors. But if nothing
-        // ever typed a bid along that chain — only an OFFER somewhere
-        // (e.g. a future tenor's offer was typed, no bid) — the same
-        // Payer-points chain can still be run against OFFER anchors
-        // (payerOffer) and that's a perfectly real, usable number. So the
-        // Payer column falls back to the best payerOffer when no payerBid
-        // exists, marked "(ofr)" so it's clear it's an offer, not a bid.
-        // The Receiver column falls back the same way onto receiverBid,
-        // marked "(bid)".
-        swapPayerVal = fmtRatePairParts(swapBest.payerBid.val, null)[0];
-        if (!swapPayerVal && isNum(swapBest.payerOffer.val)) {
-          swapPayerVal = fmtRatePairParts(swapBest.payerOffer.val, null)[0] + ' (ofr)';
-          swapPayerIsFallback = true;
-        }
-        swapReceiverVal = fmtRatePairParts(null, swapBest.receiverOffer.val)[1];
-        if (!swapReceiverVal && isNum(swapBest.receiverBid.val)) {
-          swapReceiverVal = fmtRatePairParts(null, swapBest.receiverBid.val)[1] + ' (bid)';
-          swapReceiverIsFallback = true;
-        }
+        // A single Payer-points chain can independently produce BOTH a
+        // bid (chained onto bid anchors) and an offer (chained onto
+        // offer anchors) — they're two different numbers built from the
+        // same edge. So the Payer column shows them together as a real
+        // bid/offer pair (e.g. "58/62"), same shorthand format as any
+        // typed rate, rather than picking just one. Same for Receiver
+        // using the Receiver-points chain.
+        const payerPair = fmtRatePairParts(swapBest.payerBid.val, swapBest.payerOffer.val);
+        swapPayerVal = isNum(swapBest.payerBid.val) && isNum(swapBest.payerOffer.val)
+          ? `${payerPair[0]}/${payerPair[1]}`
+          : (isNum(swapBest.payerBid.val) ? payerPair[0] : (isNum(swapBest.payerOffer.val) ? payerPair[1] : ''));
+        const receiverPair = fmtRatePairParts(swapBest.receiverBid.val, swapBest.receiverOffer.val);
+        swapReceiverVal = isNum(swapBest.receiverBid.val) && isNum(swapBest.receiverOffer.val)
+          ? `${receiverPair[0]}/${receiverPair[1]}`
+          : (isNum(swapBest.receiverOffer.val) ? receiverPair[1] : (isNum(swapBest.receiverBid.val) ? receiverPair[0] : ''));
         if (outrightPayerVal && outrightPayerVal === swapPayerVal) swapPayerVal = '';
         if (outrightReceiverVal && outrightReceiverVal === swapReceiverVal) swapReceiverVal = '';
+        swapPayerIsFallback = swapPayerVal.includes('/');
+        swapReceiverIsFallback = swapReceiverVal.includes('/');
         payerPremLabel = fmtPremiumPts(c.payerPremium);
         receiverPremLabel = fmtPremiumPts(c.receiverPremium);
         // Show the whole-number "Big Figure" actually in use for this
