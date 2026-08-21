@@ -408,18 +408,6 @@
     const key = chain + (price === 'bid' ? 'Bid' : 'Offer'); // payerBid / payerOffer / receiverBid / receiverOffer
     const candidates = [{ source: null, val: curve[t] ? curve[t][key] : null }];
 
-    // The tenor's own directly-typed Outright is a completely valid bid
-    // (or offer) candidate too, regardless of which points chain built
-    // the other candidates — a real quoted rate doesn't stop being real
-    // just because it lost the "which anchor does the graph keep" fight.
-    // solveMarket only keeps ONE anchor per connected component, so a
-    // tenor's own typed rate can otherwise be invisible to the chain
-    // result entirely (e.g. Cash typed directly, but Spot is the anchor
-    // the graph happened to keep) — this restores it to the comparison.
-    const anchor = (state.anchorByNode || {})[t];
-    const outrightVal = anchor ? (price === 'bid' ? anchor.bid : anchor.offer) : null;
-    if (isNum(outrightVal)) candidates.push({ source: 'outright', val: outrightVal });
-
     state.premiumEntries.forEach((pe) => {
       if (pe.from !== t && pe.to !== t) return;
       const other = pe.from === t ? pe.to : pe.from;
@@ -749,64 +737,86 @@
       const swapY = y + 29;
       const premY = y + 43;
 
-      let rowLabel, priceLinePayer, priceLineReceiver,
-        payerIsChainDerived = false, receiverIsChainDerived = false,
-        payerIsCrossFallback = false, receiverIsCrossFallback = false,
+      let rowLabel, outrightPayerVal, outrightReceiverVal, swapPayerVal, swapReceiverVal,
+        swapPayerIsFallback = false, swapReceiverIsFallback = false,
         payerPremLabel, receiverPremLabel, bigFigLabel, rowExtraClass = '', showRelationsBtn = true;
       let payerValForBracket = null, receiverValForBracket = null;
 
       if (row.kind === 'tenor') {
         const c = curve[t];
         rowLabel = c.label;
-        // ONE merged price per column, not a separate Outright line plus a
-        // separate Swap line — the typed Outright is just one candidate
-        // in the same pool as every chain-derived candidate (see
-        // computeCandidateBest), and the best one wins: highest bid,
-        // lowest offer. Colour alone shows where it came from — amber
-        // if the typed Outright won, green/red if a computed chain price
-        // won — so there's no risk of a duplicate or a partially
-        // overlapping pair cluttering the row. A live disagreement
-        // between the typed rate and the chain is still fully visible
-        // via 🔗-select + the match/mismatch banner, it just isn't
-        // forced onto the row itself every time.
+        // Two separate price lines per tenor, so it's obvious how the deal
+        // was actually done:
+        //  - Outright: ONLY what the dealer directly typed as a Rate Entry
+        //    for this exact tenor — blank if nothing was typed here. This
+        //    is a real quoted outright, i.e. a deal that could be dealt as
+        //    an outright as-is.
+        //  - Swap: the price built purely from the Payer/Receiver premium
+        //    chain (today's payerBid / receiverOffer), regardless of
+        //    whether this tenor also has its own outright. This is the
+        //    price a swap deal (near-date rate + forward points) implies.
+        // When both are present and agree, the tenor is confirmed either
+        // way; when they disagree, that's a live mismatch (see banners).
+        const anchor = (anchorByNode || {})[t];
         const swapBest = (state.swapBest || {})[t] || {
           payerBid: { val: c.payerBid, source: null },
           payerOffer: { val: c.payerOffer, source: null },
           receiverBid: { val: c.receiverBid, source: null },
           receiverOffer: { val: c.receiverOffer, source: null },
         };
-
-        const payerBest = swapBest.payerBid.val !== null ? swapBest.payerBid : swapBest.payerOffer;
-        const payerIsOfferFallback = swapBest.payerBid.val === null && swapBest.payerOffer.val !== null;
-        priceLinePayer = isNum(payerBest.val) ? fmtRatePairParts(payerBest.val, null)[0] + (payerIsOfferFallback ? ' (ofr)' : '') : '';
-        payerIsChainDerived = payerBest.source !== 'outright';
-        payerIsCrossFallback = payerIsOfferFallback && payerIsChainDerived;
-
-        const receiverBest = swapBest.receiverOffer.val !== null ? swapBest.receiverOffer : swapBest.receiverBid;
-        const receiverIsBidFallback = swapBest.receiverOffer.val === null && swapBest.receiverBid.val !== null;
-        priceLineReceiver = isNum(receiverBest.val) ? fmtRatePairParts(null, receiverBest.val)[1] + (receiverIsBidFallback ? ' (bid)' : '') : '';
-        receiverIsChainDerived = receiverBest.source !== 'outright';
-        receiverIsCrossFallback = receiverIsBidFallback && receiverIsChainDerived;
-
+        outrightPayerVal = isNum(anchor && anchor.bid) ? fmtRatePairParts(anchor.bid, null)[0] : '';
+        outrightReceiverVal = isNum(anchor && anchor.offer) ? fmtRatePairParts(null, anchor.offer)[1] : '';
+        // A node that IS the anchor for its own component (e.g. Spot with
+        // no premium entries touching it at all) mechanically solves back
+        // to exactly its own outright — that's not an independently
+        // "derived via swap points" price, it's just an echo. Only show
+        // the Swap line when it actually carries different information
+        // than the Outright line (a real chain result, or a genuine
+        // mismatch worth flagging) — never as a same-value duplicate.
+        // When a tenor is reachable via more than one direct Premium Entry
+        // (e.g. Cash→1M, Spot→1M, Tom→1M all typed), swapBest already
+        // picked the best candidate per side — the larger bid, the
+        // smaller offer — see computeSwapBest().
+        //
+        // A single Payer-points chain can independently produce BOTH a
+        // bid (chained onto bid anchors) and an offer (chained onto
+        // offer anchors) — they're two different numbers built from the
+        // same edge. So the Payer column shows them together as a real
+        // bid/offer pair (e.g. "58/62"), same shorthand format as any
+        // typed rate, rather than picking just one. Same for Receiver
+        // using the Receiver-points chain.
+        const payerPair = fmtRatePairParts(swapBest.payerBid.val, swapBest.payerOffer.val);
+        swapPayerVal = isNum(swapBest.payerBid.val) && isNum(swapBest.payerOffer.val)
+          ? `${payerPair[0]}/${payerPair[1]}`
+          : (isNum(swapBest.payerBid.val) ? payerPair[0] : (isNum(swapBest.payerOffer.val) ? payerPair[1] : ''));
+        const receiverPair = fmtRatePairParts(swapBest.receiverBid.val, swapBest.receiverOffer.val);
+        swapReceiverVal = isNum(swapBest.receiverBid.val) && isNum(swapBest.receiverOffer.val)
+          ? `${receiverPair[0]}/${receiverPair[1]}`
+          : (isNum(swapBest.receiverOffer.val) ? receiverPair[1] : (isNum(swapBest.receiverBid.val) ? receiverPair[0] : ''));
+        if (outrightPayerVal && outrightPayerVal === swapPayerVal) swapPayerVal = '';
+        if (outrightReceiverVal && outrightReceiverVal === swapReceiverVal) swapReceiverVal = '';
+        swapPayerIsFallback = swapPayerVal.includes('/');
+        swapReceiverIsFallback = swapReceiverVal.includes('/');
         payerPremLabel = fmtPremiumPts(c.payerPremium);
         receiverPremLabel = fmtPremiumPts(c.receiverPremium);
         // Show the whole-number "Big Figure" actually in use for this
         // tenor — whichever value is available — so it's obvious at a
         // glance whether the auto-detected/refined figure looks right,
         // without having to open Rate Entries to check.
-        const bigFigSource = isNum(payerBest.val) ? payerBest.val : receiverBest.val;
+        const bigFigSource = isNum(anchor && anchor.bid) ? anchor.bid
+          : (isNum(swapBest.payerBid.val) ? swapBest.payerBid.val
+            : (isNum(swapBest.receiverOffer.val) ? swapBest.receiverOffer.val
+              : (isNum(swapBest.payerOffer.val) ? swapBest.payerOffer.val : swapBest.receiverBid.val)));
         bigFigLabel = isNum(bigFigSource) ? `BF ${Math.floor(bigFigSource)}` : '';
         rowExtraClass = t === 'spot' ? ' ladder-row-spot' : '';
         payerValForBracket = c.payerBid;
         receiverValForBracket = c.receiverOffer;
       } else {
-        // Odd/Broken Date row — same single-merged-line idea as a
-        // standard tenor: a typed Outright on this row always wins;
-        // with nothing typed, it falls back to the auto-interpolated
-        // estimate, labeled "(interp)" and coloured like a chain-derived
-        // price so it's clearly an estimate, not a real quote. No 🔗
-        // relations link since a broken date isn't part of the premium
-        // graph.
+        // Odd/Broken Date row — same Outright/Swap-style two-line format
+        // as a standard tenor, just sourced differently: Outright is a
+        // typed Rate on that Broken Date row, "Swap" here is really the
+        // auto-interpolated figure (labeled "(interp)"), and there's no
+        // 🔗 relations link since it isn't part of the premium graph.
         const bd = row.bd;
         rowLabel = row.label;
         const typed = parseRateShorthand(bd.rate, parseFloat(state.bigFigure));
@@ -820,10 +830,12 @@
         const payerUsed = hasTypedPayer ? typed.bid : interpPayer;
         const receiverUsed = hasTypedReceiver ? typed.offer : interpReceiver;
 
-        priceLinePayer = isNum(payerUsed) ? fmtRatePairParts(payerUsed, null)[0] + (hasTypedPayer ? '' : ' (interp)') : '';
-        priceLineReceiver = isNum(receiverUsed) ? fmtRatePairParts(null, receiverUsed)[1] + (hasTypedReceiver ? '' : ' (interp)') : '';
-        payerIsChainDerived = !hasTypedPayer;
-        receiverIsChainDerived = !hasTypedReceiver;
+        outrightPayerVal = hasTypedPayer ? fmtRatePairParts(typed.bid, null)[0] : '';
+        outrightReceiverVal = hasTypedReceiver ? fmtRatePairParts(null, typed.offer)[1] : '';
+        swapPayerVal = (!hasTypedPayer && isNum(interpPayer)) ? fmtRatePairParts(interpPayer, null)[0] + ' (interp)' : '';
+        swapReceiverVal = (!hasTypedReceiver && isNum(interpReceiver)) ? fmtRatePairParts(null, interpReceiver)[1] + ' (interp)' : '';
+        if (swapPayerVal) swapPayerIsFallback = true;
+        if (swapReceiverVal) swapReceiverIsFallback = true;
         payerPremLabel = (isNum(payerUsed) && isNum(state.solved.payerSpotBid)) ? fmtPremiumPts(payerUsed - state.solved.payerSpotBid) : '';
         receiverPremLabel = (isNum(receiverUsed) && isNum(state.solved.receiverSpotOffer)) ? fmtPremiumPts(receiverUsed - state.solved.receiverSpotOffer) : '';
         const bigFigSource = isNum(payerUsed) ? payerUsed : receiverUsed;
@@ -840,25 +852,21 @@
         <circle cx="${(payerRailX + receiverRailX) / 2}" cy="${cy}" r="7" class="ladder-relations-btn${(selectedTenors || []).includes(t) ? ' active' : ''}" data-tenor="${t}"></circle>
         <text x="${(payerRailX + receiverRailX) / 2}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-relations-glyph" pointer-events="none">🔗</text>` : '';
       const editRects = showRelationsBtn ? `
-        <rect x="${payerX + colW - 110}" y="${y + 4}" width="106" height="28" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="payer"></rect>
-        <rect x="${receiverX + colW - 110}" y="${y + 4}" width="106" height="28" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="receiver"></rect>` : '';
-      // Standard tenors show ONE merged price line, vertically centered
-      // between the old outright/swap slots. Broken dates still show two
-      // (Outright typed / interpolated estimate — genuinely different
-      // kinds of numbers, see comment above).
-      const payerLineY = row.kind === 'tenor' ? (outrightY + swapY) / 2 : outrightY;
-      const receiverLineY = payerLineY;
+        <rect x="${payerX + colW - 110}" y="${y}" width="106" height="18" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="payer"></rect>
+        <rect x="${receiverX + colW - 110}" y="${y}" width="106" height="18" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="receiver"></rect>` : '';
       svg += `
         <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${rowExtraClass}"></rect>
         <text x="${payerX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${rowLabel}</text>
         <text x="${payerX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
-        <text x="${payerX + colW - 8}" y="${payerLineY}" text-anchor="end" dominant-baseline="central" class="ladder-val ${payerIsChainDerived ? 'val-bid ladder-val-swap' : 'val-outright'}${payerIsCrossFallback ? ' ladder-val-swap-cross' : ''}" pointer-events="none">${priceLinePayer}</text>
+        <text x="${payerX + colW - 8}" y="${outrightY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-outright" pointer-events="none">${outrightPayerVal}</text>
+        <text x="${payerX + colW - 8}" y="${swapY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-bid ladder-val-swap${swapPayerIsFallback ? ' ladder-val-swap-cross' : ''}">${swapPayerVal}</text>
         <text x="${payerX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${payerPremLabel}</text>
 
         <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${rowExtraClass}"></rect>
         <text x="${receiverX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${rowLabel}</text>
         <text x="${receiverX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
-        <text x="${receiverX + colW - 8}" y="${receiverLineY}" text-anchor="end" dominant-baseline="central" class="ladder-val ${receiverIsChainDerived ? 'val-offer ladder-val-swap' : 'val-outright'}${receiverIsCrossFallback ? ' ladder-val-swap-cross' : ''}" pointer-events="none">${priceLineReceiver}</text>
+        <text x="${receiverX + colW - 8}" y="${outrightY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-outright" pointer-events="none">${outrightReceiverVal}</text>
+        <text x="${receiverX + colW - 8}" y="${swapY}" text-anchor="end" dominant-baseline="central" class="ladder-val val-offer ladder-val-swap${swapReceiverIsFallback ? ' ladder-val-swap-cross' : ''}">${swapReceiverVal}</text>
         <text x="${receiverX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${receiverPremLabel}</text>
         ${editRects}
 
