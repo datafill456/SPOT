@@ -42,7 +42,6 @@
     rateEntries: [],     // [{ id, node, rate: '30/40' }]
     premiumEntries: [],  // [{ id, from, to, premium: '5/5.5', perDay: bool }]
     brokenDates: [],     // [{ id, dateStr: 'YYYY-MM-DD' }] — odd/custom tenor dates
-    selectedTenors: [], // up to 2 tenors picked via the 🔗 button — [first=anchor, second=compare] shows one curve + a detail message
     valueDateOverrides: {}, // { tenor: 'YYYY-MM-DD' } — manual correction if the computed date is wrong
     valueDates: null,
     solved: null,
@@ -382,30 +381,32 @@
   }
 
   /**
+   * A Payer premium chain can only ever build a BID (the Payer deals
+   * "sells near @ bid / buys back far @ bid + Payer premium") — a
+   * Receiver premium chain can only ever build an OFFER (Receiver deals
+   * "buys near @ offer / sells back far @ offer + Receiver premium").
+   * There is no such thing as "a Payer chain's offer" or "a Receiver
+   * chain's bid" — mixing those would fabricate a number nobody could
+   * actually deal at. So this only ever computes the one legitimate side
+   * per chain: chain='payer' → bid, chain='receiver' → offer.
+   *
    * For a tenor reachable through more than one direct Premium Entry
    * (e.g. Cash→1M, Spot→1M, and Tom→1M all typed), the single graph
    * solve only ever follows ONE of those paths — the rest are silently
    * ignored for display purposes. This works out every direct-entry
-   * candidate for a given (chain, price) combination and keeps the best
-   * one: the LARGER value for a bid, the SMALLER value for an offer —
-   * since a higher bid or a lower offer is the more competitive price.
-   *
-   * chain is which premium (Payer or Receiver points) built the edge;
-   * price is which side of the resulting rate we're deriving (bid or
-   * offer). These are independent: e.g. a Payer-points chain run against
-   * an OFFER anchor (curve.payerOffer) is exactly how you'd build an
-   * offer price for an earlier tenor when only a future tenor's offer
-   * was ever typed — the bid chain has nothing to anchor to, but the
-   * offer chain does, and that's still a real, usable number.
+   * candidate and keeps the best one: the LARGER value for a bid, the
+   * SMALLER value for an offer — since a higher bid or a lower offer is
+   * the more competitive price.
    *
    * Each candidate is built from the OTHER tenor's own main-solve price
    * shifted by that entry's premium, so this never recurses. The
    * tenor's own single-path main-solve result is always included as one
    * candidate too, so with only one connecting entry nothing changes.
    */
-  function computeCandidateBest(t, chain, price) {
+  function computeCandidateBest(t, chain) {
     const curve = state.solved.curve;
-    const key = chain + (price === 'bid' ? 'Bid' : 'Offer'); // payerBid / payerOffer / receiverBid / receiverOffer
+    const price = chain === 'payer' ? 'bid' : 'offer';
+    const key = chain + (price === 'bid' ? 'Bid' : 'Offer'); // payerBid or receiverOffer
     const candidates = [{ source: null, val: curve[t] ? curve[t][key] : null }];
 
     // The tenor's own directly-typed Outright is a completely valid bid
@@ -424,13 +425,28 @@
       if (pe.from !== t && pe.to !== t) return;
       const other = pe.from === t ? pe.to : pe.from;
       const otherC = curve[other];
-      if (!otherC || !isNum(otherC[key])) return;
+      if (!otherC) return;
       const prem = parsePremiumShorthand(pe.premium);
       const rawVal = chain === 'payer' ? prem.payer : prem.receiver;
       const edge = premiumToEdgeValue(pe.from, pe.to, rawVal, pe.perDay); // value from pe.from -> pe.to
       if (!isNum(edge)) return;
+      // Prefer the OTHER tenor's own typed Outright for this exact price
+      // (bid or offer) when it has one — that's the real, live number.
+      // Only fall back to the graph's single-path default if the other
+      // tenor never typed that side directly. solveMarket only keeps ONE
+      // anchor per connected component, so without this, a stale/wrong
+      // node's value could leak into a candidate here whenever two
+      // tenors in the same chain both have their own typed Outright and
+      // disagree — this is exactly what guarantees editing an Outright
+      // immediately updates every price derived from it, and lets e.g.
+      // "Cash→Spot Payer premium + Spot's typed offer" correctly derive
+      // Cash's offer via the Payer chain.
+      const otherAnchor = (state.anchorByNode || {})[other];
+      const otherOutright = otherAnchor ? (price === 'bid' ? otherAnchor.bid : otherAnchor.offer) : null;
+      const otherVal = isNum(otherOutright) ? otherOutright : otherC[key];
+      if (!isNum(otherVal)) return;
       const goingForward = pe.to === t; // true: other is earlier, edge adds onto other to reach t
-      const val = goingForward ? otherC[key] + edge : otherC[key] - edge;
+      const val = goingForward ? otherVal + edge : otherVal - edge;
       candidates.push({ source: other, val });
     });
 
@@ -446,10 +462,8 @@
     const best = {};
     TENORS.forEach((t) => {
       best[t] = {
-        payerBid: computeCandidateBest(t, 'payer', 'bid'),
-        payerOffer: computeCandidateBest(t, 'payer', 'offer'),
-        receiverBid: computeCandidateBest(t, 'receiver', 'bid'),
-        receiverOffer: computeCandidateBest(t, 'receiver', 'offer'),
+        payerBid: computeCandidateBest(t, 'payer'),
+        receiverOffer: computeCandidateBest(t, 'receiver'),
       };
     });
     return best;
@@ -725,83 +739,83 @@
    * chain-computed price won — so one pair can legitimately show one
    * amber number next to one green/red number.
    */
-  function buildPairMarkup(bidCand, offerCand) {
-    const bidStr = isNum(bidCand && bidCand.val) ? fmtRatePairParts(bidCand.val, null)[0] : '';
-    const offerStr = isNum(offerCand && offerCand.val) ? fmtRatePairParts(null, offerCand.val)[1] : '';
-    if (!bidStr && !offerStr) return '';
-    // Colour now signals SOURCE, not bid-vs-offer (position in the pair
-    // already shows that) — green for a rate you typed directly
-    // (Outright), yellow for a price the solver created from the
-    // premium chain, so it's obvious at a glance which numbers are real
-    // quotes and which are computed.
-    const bidClass = bidCand && bidCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
-    const offerClass = offerCand && offerCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
-    return `<tspan class="${bidClass}">${bidStr}</tspan><tspan class="ladder-val-slash">/</tspan><tspan class="${offerClass}">${offerStr}</tspan>`;
+  /**
+   * Formats ONE price for one column — the Payer column only ever shows
+   * a bid, the Receiver column only ever shows an offer (see the theory
+   * note on computeCandidateBest). If the data genuinely can't decide
+   * that side (no Outright, no valid chain candidate), this shows
+   * nothing — never a fabricated placeholder. Colour signals source:
+   * green for a rate typed directly (Outright), yellow for a price the
+   * solver created from the premium chain.
+   */
+  function formatSourcedValue(cand, price) {
+    if (!cand || !isNum(cand.val)) return '';
+    const str = price === 'bid' ? fmtRatePairParts(cand.val, null)[0] : fmtRatePairParts(null, cand.val)[1];
+    const cls = cand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
+    return `<tspan class="${cls}">${str}</tspan>`;
   }
 
-  function buildLadderSVG(curve, matches, mismatches, anchorByNode, selectedTenors) {
+  function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
     const rows = buildDisplayRows();
     const n = rows.length;
-    const rowH = 34;
-    const slot = 44;
-    const topPad = 20;
-    const height = topPad + n * slot + 12;
+    const rowH = 24;
+    const slot = 32;
+    const topPad = 16;
+    const height = topPad + n * slot + 10;
 
-    const colW = 170;
+    const colW = 138;
     const payerX = 4;
-    const payerRailX = payerX + colW + 20;
-    const receiverX = 520 - colW;
-    const receiverRailX = receiverX - 20;
+    const payerRailX = payerX + colW + 16;
+    const receiverX = 440 - colW;
+    const receiverRailX = receiverX - 16;
     const diffX = (payerRailX + receiverRailX) / 2;
-    const matchPayerX = payerRailX + 14;
-    const matchReceiverX = receiverRailX - 14;
+    const matchPayerX = payerRailX + 12;
+    const matchReceiverX = receiverRailX - 12;
 
     const rowY = (i) => topPad + i * slot;
     const rowCenterY = (i) => rowY(i) + rowH / 2;
 
-    let svg = `<svg class="ladder-svg" viewBox="0 0 520 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
-    svg += `<text x="${payerX}" y="12" class="ladder-heading">Payer</text>`;
-    svg += `<text x="${receiverX + colW}" y="12" text-anchor="end" class="ladder-heading">Receiver</text>`;
+    let svg = `<svg class="ladder-svg" viewBox="0 0 440 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
+    svg += `<text x="${payerX}" y="10" class="ladder-heading">Payer</text>`;
+    svg += `<text x="${receiverX + colW}" y="10" text-anchor="end" class="ladder-heading">Receiver</text>`;
 
     rows.forEach((row, i) => {
       const t = row.key;
       const y = rowY(i);
       const cy = rowCenterY(i);
-      const nameY = y + 12;
-      const bigfigY = y + 23;
-      const outrightY = y + 10;
-      const swapY = y + 21;
-      const premY = y + 30;
+      const nameY = y + 8;
+      const bigfigY = y + 17;
+      const outrightY = y + 7;
+      const swapY = y + 15;
+      const premY = y + 21;
 
       let rowLabel, priceLinePayer, priceLineReceiver,
         payerIsChainDerived = false, receiverIsChainDerived = false,
-        payerPremLabel, receiverPremLabel, bigFigLabel, rowExtraClass = '', showRelationsBtn = true;
+        payerPremLabel, receiverPremLabel, bigFigLabel, rowExtraClass = '', showEditable = true;
       let payerValForBracket = null, receiverValForBracket = null;
 
       if (row.kind === 'tenor') {
         const c = curve[t];
         rowLabel = c.label;
-        // Each column shows a proper bid/offer PAIR — the best available
-        // bid and the best available offer, independently, same "20/30"
-        // shorthand as any typed rate. Each side is chosen from the same
-        // candidate pool as before (typed Outright competes on equal
+        // Payer column shows ONLY a bid — that's the side a Payer chain
+        // (or a typed Outright) can actually decide. Receiver column
+        // shows ONLY an offer. If the available data can't decide that
+        // side at all (e.g. only a Payer premium was typed, so there's
+        // no way to derive Spot's offer from it), that column shows
+        // nothing — never a fabricated number. Each side independently
+        // picks the best candidate: typed Outright competes on equal
         // footing with every chain-derived candidate — see
-        // computeCandidateBest / computeSwapBest): highest bid wins,
-        // lowest offer wins. Only one side available? Shows "5/" (bid
-        // only) or "/10" (offer only), same convention as a Rate Entry
-        // typed that way. Each number is coloured by its OWN source —
-        // amber if the typed Outright won that side, green/red if a
-        // chain-computed price won — so a pair can legitimately show one
-        // amber number and one green/red number together.
+        // computeCandidateBest / computeSwapBest — highest bid wins,
+        // lowest offer wins. Colour shows the source: green = your
+        // typed Outright won, yellow = the premium chain created it.
         const swapBest = (state.swapBest || {})[t] || {
           payerBid: { val: c.payerBid, source: null },
-          payerOffer: { val: c.payerOffer, source: null },
-          receiverBid: { val: c.receiverBid, source: null },
           receiverOffer: { val: c.receiverOffer, source: null },
         };
+        row.linkSource = autoLinkSourceFor(t);
 
-        priceLinePayer = buildPairMarkup(swapBest.payerBid, swapBest.payerOffer);
-        priceLineReceiver = buildPairMarkup(swapBest.receiverBid, swapBest.receiverOffer);
+        priceLinePayer = formatSourcedValue(swapBest.payerBid, 'bid');
+        priceLineReceiver = formatSourcedValue(swapBest.receiverOffer, 'offer');
 
         payerPremLabel = fmtPremiumPts(c.payerPremium);
         receiverPremLabel = fmtPremiumPts(c.receiverPremium);
@@ -809,9 +823,7 @@
         // tenor — whichever value is available — so it's obvious at a
         // glance whether the auto-detected/refined figure looks right,
         // without having to open Rate Entries to check.
-        const bigFigSource = isNum(swapBest.payerBid.val) ? swapBest.payerBid.val
-          : (isNum(swapBest.payerOffer.val) ? swapBest.payerOffer.val
-            : (isNum(swapBest.receiverBid.val) ? swapBest.receiverBid.val : swapBest.receiverOffer.val));
+        const bigFigSource = isNum(swapBest.payerBid.val) ? swapBest.payerBid.val : swapBest.receiverOffer.val;
         bigFigLabel = isNum(bigFigSource) ? `BF ${Math.floor(bigFigSource)}` : '';
         rowExtraClass = t === 'spot' ? ' ladder-row-spot' : '';
         payerValForBracket = c.payerBid;
@@ -846,19 +858,16 @@
         const bigFigSource = isNum(payerUsed) ? payerUsed : receiverUsed;
         bigFigLabel = isNum(bigFigSource) ? `ODD · BF ${Math.floor(bigFigSource)}` : 'ODD';
         rowExtraClass = ' ladder-row-broken';
-        showRelationsBtn = false;
+        showEditable = false;
         payerValForBracket = payerUsed;
         receiverValForBracket = receiverUsed;
       }
       row.payerVal = payerValForBracket;
       row.receiverVal = receiverValForBracket;
 
-      const relationsBtn = showRelationsBtn ? `
-        <circle cx="${(payerRailX + receiverRailX) / 2}" cy="${cy}" r="7" class="ladder-relations-btn${(selectedTenors || []).includes(t) ? ' active' : ''}" data-tenor="${t}"></circle>
-        <text x="${(payerRailX + receiverRailX) / 2}" y="${cy}" text-anchor="middle" dominant-baseline="central" class="ladder-relations-glyph" pointer-events="none">🔗</text>` : '';
-      const editRects = showRelationsBtn ? `
-        <rect x="${payerX + colW - 90}" y="${y + 2}" width="86" height="20" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="payer"></rect>
-        <rect x="${receiverX + colW - 90}" y="${y + 2}" width="86" height="20" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}" data-side="receiver"></rect>` : '';
+      const editRects = showEditable ? `
+        <rect x="${payerX + colW - 74}" y="${y + 1}" width="70" height="15" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
+        <rect x="${receiverX + colW - 74}" y="${y + 1}" width="70" height="15" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
       // Standard tenors show ONE merged price line, vertically centered
       // between the old outright/swap slots. Broken dates still show two
       // (Outright typed / interpolated estimate — genuinely different
@@ -883,7 +892,6 @@
 
         <line x1="${payerX + colW}" y1="${cy}" x2="${payerRailX}" y2="${cy}" class="ladder-tick"></line>
         <line x1="${receiverRailX}" y1="${cy}" x2="${receiverX}" y2="${cy}" class="ladder-tick"></line>
-        ${relationsBtn}
       `;
     });
 
@@ -900,80 +908,29 @@
       svg += `<text x="${receiverRailX - 6}" y="${midY}" text-anchor="end" dominant-baseline="central" class="ladder-premium">${receiverPrem}</text>`;
     }
 
-    // A straight line for an adjacent pair reads fine sitting on the rail.
-    // But a pair that SKIPS a tenor (Cash->Spot skipping Tom, 1W->1M
-    // skipping 2W) drawn as the same straight line looks like it's just
-    // running past the skipped row rather than jumping over it — so those
-    // get an outward-bulging curve instead, making the skip obvious.
-    function matchPath(fromIdx, toIdx, side) {
-      const lo = Math.min(fromIdx, toIdx);
-      const hi = Math.max(fromIdx, toIdx);
+    // Automatic, non-interactive source curves: whenever a tenor's best
+    // price is a CREATED one (yellow — built from another tenor via the
+    // premium chain), draw one thin dashed line from that source row to
+    // this row, no click needed and no text label — just a quiet visual
+    // trace of where the number came from. One line per row max (the
+    // same single winning source used for coloring), to keep it readable
+    // rather than a tangle of every possible chain path.
+    const rowKeys = rows.map((r) => r.key);
+    rows.forEach((row, i) => {
+      if (!row.linkSource) return;
+      const sourceIdx = rowKeys.indexOf(row.linkSource);
+      if (sourceIdx === -1 || sourceIdx === i) return;
+      const lo = Math.min(sourceIdx, i);
+      const hi = Math.max(sourceIdx, i);
       const y1 = rowCenterY(lo);
       const y2 = rowCenterY(hi);
-      const x = side === 'payer' ? matchPayerX : matchReceiverX;
+      const x = (payerRailX + receiverRailX) / 2;
       const skips = hi - lo > 1;
-      if (!skips) {
-        return { d: `M ${x} ${y1} L ${x} ${y2}`, labelX: x, labelY: (y1 + y2) / 2 };
-      }
-      const bulge = side === 'payer' ? 22 : -22;
-      const cx = x + bulge;
-      const midY = (y1 + y2) / 2;
-      return {
-        d: `M ${x} ${y1} Q ${cx} ${midY} ${x} ${y2}`,
-        labelX: cx, labelY: midY,
-      };
-    }
-
-    // A curve is drawn ONLY for the exact pair the dealer has picked by
-    // clicking the 🔗 button on two rows (first click = anchor tenor,
-    // second click = the tenor to compare it against) — one curve, one
-    // pair, instead of the old "every relation from one tenor" clutter.
-    // Payer and Receiver are drawn independently: a confirmed match gets
-    // a solid glowing ✓ line, a mismatch gets a pulsing ⚠ line, and if
-    // neither Premium Entry nor cross-check touched that pair but both
-    // tenors still have a directly-typed rate on that side, a neutral
-    // informational line shows the implied premium anyway. The matching
-    // detail message (total + per-day, Payer & Receiver) is rendered
-    // separately, below the ladder, by renderPairDetail().
-    if (selectedTenors && selectedTenors.length === 2) {
-      const rowKeys = rows.map((r) => r.key);
-      const rawIdxA = rowKeys.indexOf(selectedTenors[0]);
-      const rawIdxB = rowKeys.indexOf(selectedTenors[1]);
-      if (rawIdxA !== -1 && rawIdxB !== -1 && rawIdxA !== rawIdxB) {
-        const [fromNode, toNode] = rawIdxA < rawIdxB ? [selectedTenors[0], selectedTenors[1]] : [selectedTenors[1], selectedTenors[0]];
-        const fromIdx = rowKeys.indexOf(fromNode);
-        const toIdx = rowKeys.indexOf(toNode);
-        const samePair = (m) => (m.from === fromNode && m.to === toNode) || (m.from === toNode && m.to === fromNode);
-
-        ['payer', 'receiver'].forEach((side) => {
-          const p = matchPath(fromIdx, toIdx, side);
-          const anchorAttr = side === 'payer' ? 'start' : 'end';
-          const labelX = side === 'payer' ? p.labelX + 6 : p.labelX - 6;
-          const match = (matches || []).find((m) => m.side === side && samePair(m));
-          const mismatch = (mismatches || []).find((m) => m.side === side && samePair(m));
-
-          if (match) {
-            svg += `<path d="${p.d}" fill="none" class="ladder-match-line ladder-match-${side}"></path>`;
-            svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchorAttr}" dominant-baseline="central" class="ladder-match-label">✓</text>`;
-          } else if (mismatch) {
-            svg += `<path d="${p.d}" fill="none" class="ladder-mismatch-line ladder-mismatch-${side}"></path>`;
-            svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchorAttr}" dominant-baseline="central" class="ladder-mismatch-label">⚠</text>`;
-          } else {
-            const fromA = (anchorByNode || {})[fromNode];
-            const toA = (anchorByNode || {})[toNode];
-            const key = side === 'payer' ? 'bid' : 'offer';
-            if (fromA && toA && isNum(fromA[key]) && isNum(toA[key])) {
-              const totalPts = (toA[key] - fromA[key]) * 100;
-              const days = state.valueDates.days[toNode] - state.valueDates.days[fromNode];
-              const perDay = days !== 0 ? totalPts / days : null;
-              const label = `${side === 'payer' ? 'Payer' : 'Receiver'} ${fmtSigned(totalPts)}p${perDay !== null ? ` (${fmtSigned(perDay)}p/d)` : ''}`;
-              svg += `<path d="${p.d}" fill="none" class="ladder-relation-line"></path>`;
-              svg += `<text x="${labelX}" y="${p.labelY}" text-anchor="${anchorAttr}" dominant-baseline="central" class="ladder-relation-label ladder-implied-${side}">${label}</text>`;
-            }
-          }
-        });
-      }
-    }
+      const d = skips
+        ? `M ${x} ${y1} Q ${x + 16} ${(y1 + y2) / 2} ${x} ${y2}`
+        : `M ${x} ${y1} L ${x} ${y2}`;
+      svg += `<path d="${d}" fill="none" class="ladder-source-line"></path>`;
+    });
 
     svg += `</svg>`;
     return svg;
@@ -981,105 +938,10 @@
 
   function renderQuoteScreen() {
     const wrap = document.getElementById('quoteLadderWrap');
-    wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches, state.anchorByNode, state.selectedTenors);
+    wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches, state.anchorByNode);
     attachLadderEditing(wrap);
     renderMatchBanner();
     renderMismatchBanner();
-    renderPairDetail();
-  }
-
-  /**
-   * Works out the Payer / Receiver total premium + per-day between the
-   * two tenors the dealer has picked with the 🔗 button, in chronological
-   * order — using whatever price each tenor actually has (a typed
-   * Outright if one exists, otherwise its chain-derived Swap price).
-   * This is what lets a pair like Cash → 1 Week work even when Cash was
-   * never typed directly, only reached via a premium chain off Spot.
-   * Returns null if either tenor has no price at all yet (unconnected
-   * and untyped).
-   */
-  function computePairDetail(fromNode, toNode) {
-    const curve = state.solved.curve;
-    const anchorByNode = state.anchorByNode || {};
-    const cFrom = curve[fromNode];
-    const cTo = curve[toNode];
-    if (!cFrom || !cTo) return null;
-    const priceOf = (c, anchor, key) => (isNum(anchor && anchor[key]) ? anchor[key] : c[key === 'bid' ? 'payerBid' : 'receiverOffer']);
-    const fromA = anchorByNode[fromNode];
-    const toA = anchorByNode[toNode];
-    const days = state.valueDates.days[toNode] - state.valueDates.days[fromNode];
-
-    let payer = null;
-    const fromBid = priceOf(cFrom, fromA, 'bid');
-    const toBid = priceOf(cTo, toA, 'bid');
-    if (isNum(fromBid) && isNum(toBid)) {
-      const total = (toBid - fromBid) * 100;
-      payer = { total, perDay: days !== 0 ? total / days : null };
-    }
-    let receiver = null;
-    const fromOffer = priceOf(cFrom, fromA, 'offer');
-    const toOffer = priceOf(cTo, toA, 'offer');
-    if (isNum(fromOffer) && isNum(toOffer)) {
-      const total = (toOffer - fromOffer) * 100;
-      receiver = { total, perDay: days !== 0 ? total / days : null };
-    }
-    if (!payer && !receiver) return null;
-    return { fromNode, toNode, days, payer, receiver };
-  }
-
-  function ensurePairDetailEl() {
-    let el = document.getElementById('pairDetailBox');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'pairDetailBox';
-      el.className = 'pair-detail-box';
-      const wrap = document.getElementById('quoteLadderWrap');
-      wrap.parentNode.insertBefore(el, wrap.nextSibling);
-    }
-    return el;
-  }
-
-  /** Big, clear Payer/Receiver detail message for the two tenors picked via 🔗. */
-  function renderPairDetail() {
-    const el = ensurePairDetailEl();
-    const sel = state.selectedTenors || [];
-    if (sel.length < 2) {
-      el.style.display = 'none';
-      el.innerHTML = '';
-      return;
-    }
-    const idxA = TENORS.indexOf(sel[0]);
-    const idxB = TENORS.indexOf(sel[1]);
-    if (idxA === -1 || idxB === -1 || idxA === idxB) {
-      el.style.display = 'none';
-      el.innerHTML = '';
-      return;
-    }
-    const [fromNode, toNode] = idxA < idxB ? [sel[0], sel[1]] : [sel[1], sel[0]];
-    const detail = computePairDetail(fromNode, toNode);
-    el.style.display = '';
-
-    if (!detail || (!detail.payer && !detail.receiver)) {
-      el.innerHTML = `<div class="pair-detail-empty">${LABELS[fromNode]} → ${LABELS[toNode]}: no rate or premium chain connects these two yet.</div>`;
-      return;
-    }
-
-    const absDays = Math.abs(detail.days);
-    const daysLabel = `${absDays} day${absDays === 1 ? '' : 's'}`;
-    const line = (side, data) => {
-      const label = side === 'payer' ? 'Payer' : 'Receiver';
-      if (!data) {
-        return `<div class="pair-detail-line pair-detail-${side} pair-detail-muted"><span class="pair-detail-label">${label}</span><span class="pair-detail-value">—</span></div>`;
-      }
-      const perDay = data.perDay !== null ? `<span class="pair-detail-sub">(${fmtSigned(data.perDay)}p/day)</span>` : '';
-      return `<div class="pair-detail-line pair-detail-${side}"><span class="pair-detail-label">${label}</span><span class="pair-detail-value">${fmtSigned(data.total)}p</span>${perDay}</div>`;
-    };
-
-    el.innerHTML = `
-      <div class="pair-detail-header">${LABELS[fromNode]} → ${LABELS[toNode]} <span class="pair-detail-days">${daysLabel}</span></div>
-      ${line('payer', detail.payer)}
-      ${line('receiver', detail.receiver)}
-    `;
   }
 
   /**
@@ -1087,38 +949,12 @@
    * The edit writes straight back into the matching Rate Entry (creating
    * one if that tenor didn't have one yet) — so it's a real input, not
    * just a display, and shows up correctly in Rate Entries and on reload.
-   * Also wires the 🔗 relations button on each row — click it to show
-   * (and re-click to hide) just that tenor's match/mismatch curves,
-   * instead of every relation being drawn at once.
    */
   function attachLadderEditing(wrap) {
     wrap.style.position = 'relative';
     wrap.querySelectorAll('.ladder-val-editable').forEach((el) => {
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => openLadderEditor(el, wrap));
-    });
-    wrap.querySelectorAll('.ladder-relations-btn').forEach((el) => {
-      el.style.cursor = 'pointer';
-      el.addEventListener('click', () => {
-        const tenor = el.dataset.tenor;
-        const sel = state.selectedTenors;
-        const pos = sel.indexOf(tenor);
-        if (pos !== -1) {
-          sel.splice(pos, 1); // clicking an already-selected tenor deselects it
-        } else if (sel.length >= 2) {
-          state.selectedTenors = [tenor]; // a 3rd click starts a fresh pair, this tenor as the new anchor
-        } else if (sel.length === 0) {
-          // First click: if this tenor's Swap price actually came from a
-          // specific other tenor (the winning candidate in swapBest),
-          // auto-select that pair immediately — no need to hunt for and
-          // click the 2nd tenor by hand to see how the best rate was built.
-          const autoSource = autoLinkSourceFor(tenor);
-          state.selectedTenors = autoSource ? [tenor, autoSource] : [tenor];
-        } else {
-          sel.push(tenor); // 2nd click on a different tenor = manual compare
-        }
-        renderQuoteScreen();
-      });
     });
   }
 
@@ -1171,10 +1007,7 @@
   /** Same "which tenor produced the best price" logic as the 🔗 button, reused so editing a rate also reveals where a created price is coming from. */
   function autoLinkSourceFor(tenor) {
     const best = (state.swapBest || {})[tenor] || {};
-    return (best.payerBid && best.payerBid.source)
-      || (best.receiverOffer && best.receiverOffer.source)
-      || (best.payerOffer && best.payerOffer.source)
-      || (best.receiverBid && best.receiverBid.source);
+    return (best.payerBid && best.payerBid.source) || (best.receiverOffer && best.receiverOffer.source);
   }
 
   function applyLadderEdit(tenor, raw) {
@@ -1189,29 +1022,16 @@
       state.rateEntries.push({ id: nextRateId++, node: tenor, rate: raw });
     }
     recompute();
-    // Show where this tenor's price is coming from right away — same
-    // auto-link the 🔗 button does on first click — so editing a rate
-    // immediately reveals the source curve instead of requiring a
-    // separate click afterward.
-    const autoSource = autoLinkSourceFor(tenor);
-    state.selectedTenors = autoSource ? [tenor, autoSource] : [tenor];
     renderRateTable();
     renderDownstream();
     scheduleSaveDraft();
   }
 
   /** Only match/mismatch entries touching the exact 2 tenors currently picked via 🔗 (either order). Empty when fewer than 2 are selected. */
-  function selectedPairEntries(list) {
-    const sel = state.selectedTenors || [];
-    if (sel.length !== 2) return [];
-    const [a, b] = sel;
-    return (list || []).filter((m) => (m.from === a && m.to === b) || (m.from === b && m.to === a));
-  }
-
   function renderMatchBanner() {
     const el = document.getElementById('matchBanner');
     if (!el) return;
-    const matches = selectedPairEntries(state.matches);
+    const matches = state.matches || [];
     if (!matches.length) {
       el.style.display = 'none';
       el.innerHTML = '';
@@ -1228,7 +1048,7 @@
   function renderMismatchBanner() {
     const el = document.getElementById('mismatchBanner');
     if (!el) return;
-    const mismatches = selectedPairEntries(state.mismatches);
+    const mismatches = state.mismatches || [];
     if (!mismatches.length) {
       el.style.display = 'none';
       el.innerHTML = '';
@@ -1488,7 +1308,6 @@
       state.premiumEntries = [];
       state.brokenDates = [];
       state.bigFigure = '';
-      state.selectedTenors = [];
       document.getElementById('bigFigureInput').value = '';
       recompute();
       renderRateTable();
