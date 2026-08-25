@@ -9,19 +9,19 @@
 <link rel="stylesheet" href="style.css" />
 <style>
   .ladder-svg { display: block; font-family: 'IBM Plex Mono', monospace; }
-  .ladder-heading { font-size: 10px; font-weight: 700; fill: var(--text-dim, #888); text-transform: uppercase; letter-spacing: 0.05em; }
+  .ladder-heading { font-size: 8px; font-weight: 700; fill: var(--text-dim, #888); text-transform: uppercase; letter-spacing: 0.03em; }
   .ladder-row { fill: var(--panel-alt, rgba(128,128,128,0.06)); stroke: var(--border, rgba(128,128,128,0.25)); stroke-width: 0.5; }
   .ladder-row-spot { stroke: var(--accent, #888); stroke-width: 1; }
   .ladder-row-broken { stroke: var(--amber, #ffb020); stroke-width: 1; stroke-dasharray: 4 3; }
-  .ladder-tenor { font-size: 9px; fill: var(--text, currentColor); }
-  .ladder-bigfig { font-size: 6.5px; fill: var(--text-muted, #7c8797); font-family: 'IBM Plex Mono', monospace; }
-  .ladder-val { font-size: 10px; font-weight: 600; }
+  .ladder-tenor { font-size: 7px; fill: var(--text, currentColor); }
+  .ladder-bigfig { font-size: 5.5px; fill: var(--text-muted, #7c8797); font-family: 'IBM Plex Mono', monospace; }
+  .ladder-val { font-size: 8px; font-weight: 600; }
   .ladder-src-outright { fill: var(--green, #3ba55d); color: var(--green, #3ba55d); font-weight: 700; }
   .ladder-src-created { fill: var(--amber, #ffb020); color: var(--amber, #ffb020); font-weight: 600; }
-  .ladder-tick { stroke: var(--border, rgba(128,128,128,0.35)); stroke-width: 0.75; }
-  .ladder-rail { stroke: var(--border-strong, rgba(128,128,128,0.5)); stroke-width: 0.75; }
-  .ladder-premium { font-size: 7.5px; fill: var(--text-dim, #888); }
-  .ladder-premium-inline { font-size: 7.5px; fill: var(--text-dim, #888); }
+  .ladder-tick { stroke: var(--border, rgba(128,128,128,0.35)); stroke-width: 0.5; }
+  .ladder-rail { stroke: var(--border-strong, rgba(128,128,128,0.5)); stroke-width: 0.5; }
+  .ladder-premium { font-size: 6px; fill: var(--text-dim, #888); }
+  .ladder-premium-inline { font-size: 6px; fill: var(--text-dim, #888); }
   .ladder-source-line {
     stroke: var(--amber, #ffb020);
     stroke-width: 1.25;
@@ -126,7 +126,7 @@
   </div>
 
   <div class="card">
-    <h2>Dealer Quote Screen <span class="hint">Live · read-only · each column shows a real bid/offer PAIR (e.g. "20/30"), best available on each side — "5/" if only a bid exists, "/10" if only an offer exists · each number coloured by its own source: green = your typed Outright won that side, yellow = the solver created it from the premium chain (even beating your own Outright if the chain is tighter) — one pair can show one green number next to one yellow number · a thin dashed amber line automatically traces a created price back to the tenor it came from, no click needed · click any price to edit that tenor's whole rate (both bid and offer together, e.g. type "30/40") · a single-number Premium (no "/") means Payer-only — it does NOT copy onto Receiver · dashed-amber row = an Odd/Broken Date, slotted in by real value date, "(interp)" if no Rate was typed for it · Payer sells near @ bid / buys back far @ bid + Payer premium · Receiver buys near @ offer / sells back far @ offer + Receiver premium · brackets show the premium between every consecutive row · glowing bar = a typed premium is confirmed by your typed rates at both ends</span></h2>
+    <h2>Dealer Quote Screen <span class="hint">green = typed · yellow = created</span></h2>
     <div id="matchBanner" style="display:none;"></div>
     <div id="mismatchBanner" style="display:none;"></div>
     <div id="quoteLadderWrap" style="overflow-x:auto; overflow-y:auto; max-height:85vh; border:1px solid var(--border); border-radius:8px;"></div>
