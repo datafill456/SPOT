@@ -758,36 +758,36 @@
   function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
     const rows = buildDisplayRows();
     const n = rows.length;
-    const rowH = 24;
-    const slot = 32;
-    const topPad = 16;
-    const height = topPad + n * slot + 10;
+    const rowH = 19;
+    const slot = 25;
+    const topPad = 13;
+    const height = topPad + n * slot + 8;
 
-    const colW = 138;
+    const colW = 112;
     const payerX = 4;
-    const payerRailX = payerX + colW + 16;
-    const receiverX = 440 - colW;
-    const receiverRailX = receiverX - 16;
+    const payerRailX = payerX + colW + 12;
+    const receiverX = 372 - colW;
+    const receiverRailX = receiverX - 12;
     const diffX = (payerRailX + receiverRailX) / 2;
-    const matchPayerX = payerRailX + 12;
-    const matchReceiverX = receiverRailX - 12;
+    const matchPayerX = payerRailX + 10;
+    const matchReceiverX = receiverRailX - 10;
 
     const rowY = (i) => topPad + i * slot;
     const rowCenterY = (i) => rowY(i) + rowH / 2;
 
-    let svg = `<svg class="ladder-svg" viewBox="0 0 440 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
-    svg += `<text x="${payerX}" y="10" class="ladder-heading">Payer</text>`;
-    svg += `<text x="${receiverX + colW}" y="10" text-anchor="end" class="ladder-heading">Receiver</text>`;
+    let svg = `<svg class="ladder-svg" viewBox="0 0 372 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
+    svg += `<text x="${payerX}" y="9" class="ladder-heading">Payer</text>`;
+    svg += `<text x="${receiverX + colW}" y="9" text-anchor="end" class="ladder-heading">Receiver</text>`;
 
     rows.forEach((row, i) => {
       const t = row.key;
       const y = rowY(i);
       const cy = rowCenterY(i);
-      const nameY = y + 8;
-      const bigfigY = y + 17;
-      const outrightY = y + 7;
-      const swapY = y + 15;
-      const premY = y + 21;
+      const nameY = y + 6;
+      const bigfigY = y + 13;
+      const outrightY = y + 6;
+      const swapY = y + 12;
+      const premY = y + 17;
 
       let rowLabel, priceLinePayer, priceLineReceiver,
         payerIsChainDerived = false, receiverIsChainDerived = false,
@@ -866,8 +866,8 @@
       row.receiverVal = receiverValForBracket;
 
       const editRects = showEditable ? `
-        <rect x="${payerX + colW - 74}" y="${y + 1}" width="70" height="15" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
-        <rect x="${receiverX + colW - 74}" y="${y + 1}" width="70" height="15" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
+        <rect x="${payerX + colW - 62}" y="${y}" width="58" height="12" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
+        <rect x="${receiverX + colW - 62}" y="${y}" width="58" height="12" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
       // Standard tenors show ONE merged price line, vertically centered
       // between the old outright/swap slots. Broken dates still show two
       // (Outright typed / interpolated estimate — genuinely different
