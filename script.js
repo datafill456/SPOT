@@ -701,12 +701,6 @@
     const pts = v * 100;
     return (pts >= 0 ? '+' : '') + fmtTrim(pts) + 'p from Spot';
   }
-  /** Compact form for tight single-line rows: "+27.75p" instead of "+27.75p from Spot". */
-  function fmtPremiumPtsShort(v) {
-    if (!isNum(v)) return '';
-    const pts = v * 100;
-    return (pts >= 0 ? '+' : '') + fmtTrim(pts) + 'p';
-  }
   function fmtDiffPts(payerRate, receiverRate) {
     if (!isNum(payerRate) || !isNum(receiverRate)) return '—';
     const pts = (receiverRate - payerRate) * 100;
@@ -764,31 +758,36 @@
   function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
     const rows = buildDisplayRows();
     const n = rows.length;
-    const rowH = 15;
-    const slot = 18;
-    const topPad = 10;
-    const height = topPad + n * slot + 6;
+    const rowH = 19;
+    const slot = 25;
+    const topPad = 13;
+    const height = topPad + n * slot + 8;
 
-    const colW = 92;
+    const colW = 112;
     const payerX = 4;
-    const payerRailX = payerX + colW + 10;
-    const receiverX = 306 - colW;
-    const receiverRailX = receiverX - 10;
+    const payerRailX = payerX + colW + 12;
+    const receiverX = 372 - colW;
+    const receiverRailX = receiverX - 12;
     const diffX = (payerRailX + receiverRailX) / 2;
-    const matchPayerX = payerRailX + 8;
-    const matchReceiverX = receiverRailX - 8;
+    const matchPayerX = payerRailX + 10;
+    const matchReceiverX = receiverRailX - 10;
 
     const rowY = (i) => topPad + i * slot;
     const rowCenterY = (i) => rowY(i) + rowH / 2;
 
-    let svg = `<svg class="ladder-svg" viewBox="0 0 306 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
-    svg += `<text x="${payerX}" y="8" class="ladder-heading">Payer</text>`;
-    svg += `<text x="${receiverX + colW}" y="8" text-anchor="end" class="ladder-heading">Receiver</text>`;
+    let svg = `<svg class="ladder-svg" viewBox="0 0 372 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
+    svg += `<text x="${payerX}" y="9" class="ladder-heading">Payer</text>`;
+    svg += `<text x="${receiverX + colW}" y="9" text-anchor="end" class="ladder-heading">Receiver</text>`;
 
     rows.forEach((row, i) => {
       const t = row.key;
       const y = rowY(i);
       const cy = rowCenterY(i);
+      const nameY = y + 6;
+      const bigfigY = y + 13;
+      const outrightY = y + 6;
+      const swapY = y + 12;
+      const premY = y + 17;
 
       let rowLabel, priceLinePayer, priceLineReceiver,
         payerIsChainDerived = false, receiverIsChainDerived = false,
@@ -818,14 +817,14 @@
         priceLinePayer = formatSourcedValue(swapBest.payerBid, 'bid');
         priceLineReceiver = formatSourcedValue(swapBest.receiverOffer, 'offer');
 
-        payerPremLabel = fmtPremiumPtsShort(c.payerPremium);
-        receiverPremLabel = fmtPremiumPtsShort(c.receiverPremium);
+        payerPremLabel = fmtPremiumPts(c.payerPremium);
+        receiverPremLabel = fmtPremiumPts(c.receiverPremium);
         // Show the whole-number "Big Figure" actually in use for this
         // tenor — whichever value is available — so it's obvious at a
         // glance whether the auto-detected/refined figure looks right,
         // without having to open Rate Entries to check.
         const bigFigSource = isNum(swapBest.payerBid.val) ? swapBest.payerBid.val : swapBest.receiverOffer.val;
-        bigFigLabel = isNum(bigFigSource) ? `${Math.floor(bigFigSource)}` : '';
+        bigFigLabel = isNum(bigFigSource) ? `BF ${Math.floor(bigFigSource)}` : '';
         rowExtraClass = t === 'spot' ? ' ladder-row-spot' : '';
         payerValForBracket = c.payerBid;
         receiverValForBracket = c.receiverOffer;
@@ -850,14 +849,14 @@
         const payerUsed = hasTypedPayer ? typed.bid : interpPayer;
         const receiverUsed = hasTypedReceiver ? typed.offer : interpReceiver;
 
-        priceLinePayer = isNum(payerUsed) ? fmtRatePairParts(payerUsed, null)[0] + (hasTypedPayer ? '' : '·i') : '';
-        priceLineReceiver = isNum(receiverUsed) ? fmtRatePairParts(null, receiverUsed)[1] + (hasTypedReceiver ? '' : '·i') : '';
+        priceLinePayer = isNum(payerUsed) ? fmtRatePairParts(payerUsed, null)[0] + (hasTypedPayer ? '' : ' (interp)') : '';
+        priceLineReceiver = isNum(receiverUsed) ? fmtRatePairParts(null, receiverUsed)[1] + (hasTypedReceiver ? '' : ' (interp)') : '';
         payerIsChainDerived = !hasTypedPayer;
         receiverIsChainDerived = !hasTypedReceiver;
-        payerPremLabel = (isNum(payerUsed) && isNum(state.solved.payerSpotBid)) ? fmtPremiumPtsShort(payerUsed - state.solved.payerSpotBid) : '';
-        receiverPremLabel = (isNum(receiverUsed) && isNum(state.solved.receiverSpotOffer)) ? fmtPremiumPtsShort(receiverUsed - state.solved.receiverSpotOffer) : '';
+        payerPremLabel = (isNum(payerUsed) && isNum(state.solved.payerSpotBid)) ? fmtPremiumPts(payerUsed - state.solved.payerSpotBid) : '';
+        receiverPremLabel = (isNum(receiverUsed) && isNum(state.solved.receiverSpotOffer)) ? fmtPremiumPts(receiverUsed - state.solved.receiverSpotOffer) : '';
         const bigFigSource = isNum(payerUsed) ? payerUsed : receiverUsed;
-        bigFigLabel = isNum(bigFigSource) ? `${Math.floor(bigFigSource)}` : 'ODD';
+        bigFigLabel = isNum(bigFigSource) ? `ODD · BF ${Math.floor(bigFigSource)}` : 'ODD';
         rowExtraClass = ' ladder-row-broken';
         showEditable = false;
         payerValForBracket = payerUsed;
@@ -867,21 +866,28 @@
       row.receiverVal = receiverValForBracket;
 
       const editRects = showEditable ? `
-        <rect x="${payerX + colW - 50}" y="${y}" width="46" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
-        <rect x="${receiverX + colW - 50}" y="${y}" width="46" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
+        <rect x="${payerX + colW - 62}" y="${y}" width="58" height="12" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
+        <rect x="${receiverX + colW - 62}" y="${y}" width="58" height="12" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
+      // Standard tenors show ONE merged price line, vertically centered
+      // between the old outright/swap slots. Broken dates still show two
+      // (Outright typed / interpolated estimate — genuinely different
+      // kinds of numbers, see comment above).
+      const payerLineY = row.kind === 'tenor' ? (outrightY + swapY) / 2 : outrightY;
+      const receiverLineY = payerLineY;
       const outerPayerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${payerIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
       const outerReceiverClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${receiverIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
-      // Single line per side: tenor name + Big Figure combined on the
-      // left, price + premium-from-spot combined on the right — cuts
-      // row height roughly in half versus stacking them.
       svg += `
-        <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
-        <text x="${payerX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan></text>
-        <text x="${payerX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerPayerClass}" pointer-events="none">${priceLinePayer}<tspan class="ladder-premium-inline"> ${payerPremLabel}</tspan></text>
+        <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${rowExtraClass}"></rect>
+        <text x="${payerX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${rowLabel}</text>
+        <text x="${payerX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
+        <text x="${payerX + colW - 8}" y="${payerLineY}" text-anchor="end" dominant-baseline="central" class="${outerPayerClass}" pointer-events="none">${priceLinePayer}</text>
+        <text x="${payerX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${payerPremLabel}</text>
 
-        <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
-        <text x="${receiverX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan></text>
-        <text x="${receiverX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerReceiverClass}" pointer-events="none">${priceLineReceiver}<tspan class="ladder-premium-inline"> ${receiverPremLabel}</tspan></text>
+        <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${rowExtraClass}"></rect>
+        <text x="${receiverX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${rowLabel}</text>
+        <text x="${receiverX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
+        <text x="${receiverX + colW - 8}" y="${receiverLineY}" text-anchor="end" dominant-baseline="central" class="${outerReceiverClass}" pointer-events="none">${priceLineReceiver}</text>
+        <text x="${receiverX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${receiverPremLabel}</text>
         ${editRects}
 
         <line x1="${payerX + colW}" y1="${cy}" x2="${payerRailX}" y2="${cy}" class="ladder-tick"></line>
