@@ -381,14 +381,16 @@
   }
 
   /**
-   * A Payer premium chain can only ever build a BID (the Payer deals
-   * "sells near @ bid / buys back far @ bid + Payer premium") — a
-   * Receiver premium chain can only ever build an OFFER (Receiver deals
-   * "buys near @ offer / sells back far @ offer + Receiver premium").
-   * There is no such thing as "a Payer chain's offer" or "a Receiver
-   * chain's bid" — mixing those would fabricate a number nobody could
-   * actually deal at. So this only ever computes the one legitimate side
-   * per chain: chain='payer' → bid, chain='receiver' → offer.
+   * A Payer premium chain can only ever build a BID (the Payer deal is
+   * "sell near @ bid / buy back far @ bid + Payer premium") — a
+   * Receiver premium chain can only ever build an OFFER (Receiver deal
+   * is "buy near @ offer / sell back far @ offer + Receiver premium").
+   * This holds regardless of direction — solving forward (near known,
+   * deriving far) or backward (far known, deriving near), a Payer chain
+   * always produces a bid, never an offer, since it's the same one
+   * continuous deal priced consistently at bid on both legs. There is no
+   * such thing as "a Payer chain's offer" or "a Receiver chain's bid" —
+   * mixing those would fabricate a number nobody could actually deal at.
    *
    * For a tenor reachable through more than one direct Premium Entry
    * (e.g. Cash→1M, Spot→1M, and Tom→1M all typed), the single graph
@@ -398,10 +400,11 @@
    * SMALLER value for an offer — since a higher bid or a lower offer is
    * the more competitive price.
    *
-   * Each candidate is built from the OTHER tenor's own main-solve price
-   * shifted by that entry's premium, so this never recurses. The
-   * tenor's own single-path main-solve result is always included as one
-   * candidate too, so with only one connecting entry nothing changes.
+   * Each candidate is built from the OTHER tenor's own live price
+   * (preferring its own typed Outright over the graph's single-anchor
+   * default — see comment below) shifted by that entry's premium, so
+   * this never recurses. The tenor's own single-path main-solve result
+   * and its own typed Outright are always included as candidates too.
    */
   function computeCandidateBest(t, chain) {
     const curve = state.solved.curve;
@@ -433,14 +436,9 @@
       // Prefer the OTHER tenor's own typed Outright for this exact price
       // (bid or offer) when it has one — that's the real, live number.
       // Only fall back to the graph's single-path default if the other
-      // tenor never typed that side directly. solveMarket only keeps ONE
-      // anchor per connected component, so without this, a stale/wrong
-      // node's value could leak into a candidate here whenever two
-      // tenors in the same chain both have their own typed Outright and
-      // disagree — this is exactly what guarantees editing an Outright
-      // immediately updates every price derived from it, and lets e.g.
-      // "Cash→Spot Payer premium + Spot's typed offer" correctly derive
-      // Cash's offer via the Payer chain.
+      // tenor never typed that side directly. This is what guarantees
+      // editing an Outright immediately updates every price derived
+      // from it, in EITHER direction.
       const otherAnchor = (state.anchorByNode || {})[other];
       const otherOutright = otherAnchor ? (price === 'bid' ? otherAnchor.bid : otherAnchor.offer) : null;
       const otherVal = isNum(otherOutright) ? otherOutright : otherC[key];
@@ -701,6 +699,12 @@
     const pts = v * 100;
     return (pts >= 0 ? '+' : '') + fmtTrim(pts) + 'p from Spot';
   }
+  /** Compact form for tight single-line rows: "+27.75p" instead of "+27.75p from Spot". */
+  function fmtPremiumPtsShort(v) {
+    if (!isNum(v)) return '';
+    const pts = v * 100;
+    return (pts >= 0 ? '+' : '') + fmtTrim(pts) + 'p';
+  }
   function fmtDiffPts(payerRate, receiverRate) {
     if (!isNum(payerRate) || !isNum(receiverRate)) return '—';
     const pts = (receiverRate - payerRate) * 100;
@@ -748,6 +752,16 @@
    * green for a rate typed directly (Outright), yellow for a price the
    * solver created from the premium chain.
    */
+  /**
+   * Renders one column's price as a real "bid/offer" pair (e.g. "20/30"),
+   * same shorthand as any typed rate — "5/" if only a bid exists, "/10"
+   * if only an offer exists, "" if neither. Each number is colored by
+   * its OWN winning source independently (bidCand/offerCand are
+   * {val, source} from computeCandidateBest): green if the typed
+   * Outright won that side, yellow if a chain-computed price won it —
+   * so one pair can legitimately show one green number next to one
+   * yellow number.
+   */
   function formatSourcedValue(cand, price) {
     if (!cand || !isNum(cand.val)) return '';
     const str = price === 'bid' ? fmtRatePairParts(cand.val, null)[0] : fmtRatePairParts(null, cand.val)[1];
@@ -758,36 +772,31 @@
   function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
     const rows = buildDisplayRows();
     const n = rows.length;
-    const rowH = 19;
-    const slot = 25;
-    const topPad = 13;
-    const height = topPad + n * slot + 8;
+    const rowH = 12;
+    const slot = 14;
+    const topPad = 8;
+    const height = topPad + n * slot + 5;
 
-    const colW = 112;
-    const payerX = 4;
-    const payerRailX = payerX + colW + 12;
-    const receiverX = 372 - colW;
-    const receiverRailX = receiverX - 12;
+    const colW = 78;
+    const payerX = 3;
+    const payerRailX = payerX + colW + 8;
+    const receiverX = 260 - colW;
+    const receiverRailX = receiverX - 8;
     const diffX = (payerRailX + receiverRailX) / 2;
-    const matchPayerX = payerRailX + 10;
-    const matchReceiverX = receiverRailX - 10;
+    const matchPayerX = payerRailX + 6;
+    const matchReceiverX = receiverRailX - 6;
 
     const rowY = (i) => topPad + i * slot;
     const rowCenterY = (i) => rowY(i) + rowH / 2;
 
-    let svg = `<svg class="ladder-svg" viewBox="0 0 372 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
-    svg += `<text x="${payerX}" y="9" class="ladder-heading">Payer</text>`;
-    svg += `<text x="${receiverX + colW}" y="9" text-anchor="end" class="ladder-heading">Receiver</text>`;
+    let svg = `<svg class="ladder-svg" viewBox="0 0 260 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
+    svg += `<text x="${payerX}" y="7" class="ladder-heading">Payer</text>`;
+    svg += `<text x="${receiverX + colW}" y="7" text-anchor="end" class="ladder-heading">Receiver</text>`;
 
     rows.forEach((row, i) => {
       const t = row.key;
       const y = rowY(i);
       const cy = rowCenterY(i);
-      const nameY = y + 6;
-      const bigfigY = y + 13;
-      const outrightY = y + 6;
-      const swapY = y + 12;
-      const premY = y + 17;
 
       let rowLabel, priceLinePayer, priceLineReceiver,
         payerIsChainDerived = false, receiverIsChainDerived = false,
@@ -798,16 +807,15 @@
         const c = curve[t];
         rowLabel = c.label;
         // Payer column shows ONLY a bid — that's the side a Payer chain
-        // (or a typed Outright) can actually decide. Receiver column
-        // shows ONLY an offer. If the available data can't decide that
-        // side at all (e.g. only a Payer premium was typed, so there's
-        // no way to derive Spot's offer from it), that column shows
-        // nothing — never a fabricated number. Each side independently
-        // picks the best candidate: typed Outright competes on equal
-        // footing with every chain-derived candidate — see
-        // computeCandidateBest / computeSwapBest — highest bid wins,
-        // lowest offer wins. Colour shows the source: green = your
-        // typed Outright won, yellow = the premium chain created it.
+        // (or a typed Outright) can actually decide, in either direction.
+        // Receiver column shows ONLY an offer. If the available data
+        // can't decide that side at all, that column shows nothing —
+        // never a fabricated number. Each side independently picks the
+        // best candidate: typed Outright competes on equal footing with
+        // every chain-derived candidate — see computeCandidateBest /
+        // computeSwapBest — highest bid wins, lowest offer wins. Colour
+        // shows the source: green = your typed Outright won, yellow =
+        // the premium chain created it.
         const swapBest = (state.swapBest || {})[t] || {
           payerBid: { val: c.payerBid, source: null },
           receiverOffer: { val: c.receiverOffer, source: null },
@@ -817,14 +825,14 @@
         priceLinePayer = formatSourcedValue(swapBest.payerBid, 'bid');
         priceLineReceiver = formatSourcedValue(swapBest.receiverOffer, 'offer');
 
-        payerPremLabel = fmtPremiumPts(c.payerPremium);
-        receiverPremLabel = fmtPremiumPts(c.receiverPremium);
+        payerPremLabel = fmtPremiumPtsShort(c.payerPremium);
+        receiverPremLabel = fmtPremiumPtsShort(c.receiverPremium);
         // Show the whole-number "Big Figure" actually in use for this
         // tenor — whichever value is available — so it's obvious at a
         // glance whether the auto-detected/refined figure looks right,
         // without having to open Rate Entries to check.
         const bigFigSource = isNum(swapBest.payerBid.val) ? swapBest.payerBid.val : swapBest.receiverOffer.val;
-        bigFigLabel = isNum(bigFigSource) ? `BF ${Math.floor(bigFigSource)}` : '';
+        bigFigLabel = isNum(bigFigSource) ? `${Math.floor(bigFigSource)}` : '';
         rowExtraClass = t === 'spot' ? ' ladder-row-spot' : '';
         payerValForBracket = c.payerBid;
         receiverValForBracket = c.receiverOffer;
@@ -849,14 +857,14 @@
         const payerUsed = hasTypedPayer ? typed.bid : interpPayer;
         const receiverUsed = hasTypedReceiver ? typed.offer : interpReceiver;
 
-        priceLinePayer = isNum(payerUsed) ? fmtRatePairParts(payerUsed, null)[0] + (hasTypedPayer ? '' : ' (interp)') : '';
-        priceLineReceiver = isNum(receiverUsed) ? fmtRatePairParts(null, receiverUsed)[1] + (hasTypedReceiver ? '' : ' (interp)') : '';
+        priceLinePayer = isNum(payerUsed) ? fmtRatePairParts(payerUsed, null)[0] + (hasTypedPayer ? '' : '·i') : '';
+        priceLineReceiver = isNum(receiverUsed) ? fmtRatePairParts(null, receiverUsed)[1] + (hasTypedReceiver ? '' : '·i') : '';
         payerIsChainDerived = !hasTypedPayer;
         receiverIsChainDerived = !hasTypedReceiver;
-        payerPremLabel = (isNum(payerUsed) && isNum(state.solved.payerSpotBid)) ? fmtPremiumPts(payerUsed - state.solved.payerSpotBid) : '';
-        receiverPremLabel = (isNum(receiverUsed) && isNum(state.solved.receiverSpotOffer)) ? fmtPremiumPts(receiverUsed - state.solved.receiverSpotOffer) : '';
+        payerPremLabel = (isNum(payerUsed) && isNum(state.solved.payerSpotBid)) ? fmtPremiumPtsShort(payerUsed - state.solved.payerSpotBid) : '';
+        receiverPremLabel = (isNum(receiverUsed) && isNum(state.solved.receiverSpotOffer)) ? fmtPremiumPtsShort(receiverUsed - state.solved.receiverSpotOffer) : '';
         const bigFigSource = isNum(payerUsed) ? payerUsed : receiverUsed;
-        bigFigLabel = isNum(bigFigSource) ? `ODD · BF ${Math.floor(bigFigSource)}` : 'ODD';
+        bigFigLabel = isNum(bigFigSource) ? `${Math.floor(bigFigSource)}` : 'ODD';
         rowExtraClass = ' ladder-row-broken';
         showEditable = false;
         payerValForBracket = payerUsed;
@@ -866,28 +874,21 @@
       row.receiverVal = receiverValForBracket;
 
       const editRects = showEditable ? `
-        <rect x="${payerX + colW - 62}" y="${y}" width="58" height="12" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
-        <rect x="${receiverX + colW - 62}" y="${y}" width="58" height="12" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
-      // Standard tenors show ONE merged price line, vertically centered
-      // between the old outright/swap slots. Broken dates still show two
-      // (Outright typed / interpolated estimate — genuinely different
-      // kinds of numbers, see comment above).
-      const payerLineY = row.kind === 'tenor' ? (outrightY + swapY) / 2 : outrightY;
-      const receiverLineY = payerLineY;
+        <rect x="${payerX + colW - 42}" y="${y}" width="39" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
+        <rect x="${receiverX + colW - 42}" y="${y}" width="39" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
       const outerPayerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${payerIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
       const outerReceiverClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${receiverIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
+      // Single line per side: tenor name + Big Figure combined on the
+      // left, price + premium-from-spot combined on the right — cuts
+      // row height roughly in half versus stacking them.
       svg += `
-        <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${rowExtraClass}"></rect>
-        <text x="${payerX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${rowLabel}</text>
-        <text x="${payerX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
-        <text x="${payerX + colW - 8}" y="${payerLineY}" text-anchor="end" dominant-baseline="central" class="${outerPayerClass}" pointer-events="none">${priceLinePayer}</text>
-        <text x="${payerX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${payerPremLabel}</text>
+        <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
+        <text x="${payerX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan></text>
+        <text x="${payerX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerPayerClass}" pointer-events="none">${priceLinePayer}<tspan class="ladder-premium-inline"> ${payerPremLabel}</tspan></text>
 
-        <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="3" class="ladder-row${rowExtraClass}"></rect>
-        <text x="${receiverX + 8}" y="${nameY}" dominant-baseline="central" class="ladder-tenor">${rowLabel}</text>
-        <text x="${receiverX + 8}" y="${bigfigY}" dominant-baseline="central" class="ladder-bigfig">${bigFigLabel}</text>
-        <text x="${receiverX + colW - 8}" y="${receiverLineY}" text-anchor="end" dominant-baseline="central" class="${outerReceiverClass}" pointer-events="none">${priceLineReceiver}</text>
-        <text x="${receiverX + colW - 8}" y="${premY}" text-anchor="end" dominant-baseline="central" class="ladder-premium-inline">${receiverPremLabel}</text>
+        <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
+        <text x="${receiverX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan></text>
+        <text x="${receiverX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerReceiverClass}" pointer-events="none">${priceLineReceiver}<tspan class="ladder-premium-inline"> ${receiverPremLabel}</tspan></text>
         ${editRects}
 
         <line x1="${payerX + colW}" y1="${cy}" x2="${payerRailX}" y2="${cy}" class="ladder-tick"></line>
