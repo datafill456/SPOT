@@ -381,24 +381,13 @@
   }
 
   /**
-   * A Payer premium chain can only ever build a BID (the Payer deal is
-   * "sell near @ bid / buy back far @ bid + Payer premium") — a
-   * Receiver premium chain can only ever build an OFFER (Receiver deal
-   * is "buy near @ offer / sell back far @ offer + Receiver premium").
-   * This holds regardless of direction — solving forward (near known,
-   * deriving far) or backward (far known, deriving near), a Payer chain
-   * always produces a bid, never an offer, since it's the same one
-   * continuous deal priced consistently at bid on both legs. There is no
-   * such thing as "a Payer chain's offer" or "a Receiver chain's bid" —
-   * mixing those would fabricate a number nobody could actually deal at.
-   *
    * For a tenor reachable through more than one direct Premium Entry
    * (e.g. Cash→1M, Spot→1M, and Tom→1M all typed), the single graph
    * solve only ever follows ONE of those paths — the rest are silently
    * ignored for display purposes. This works out every direct-entry
-   * candidate and keeps the best one: the LARGER value for a bid, the
-   * SMALLER value for an offer — since a higher bid or a lower offer is
-   * the more competitive price.
+   * candidate for a given (chain, price) combination and keeps the best
+   * one: the LARGER value for a bid, the SMALLER value for an offer —
+   * since a higher bid or a lower offer is the more competitive price.
    *
    * Each candidate is built from the OTHER tenor's own live price
    * (preferring its own typed Outright over the graph's single-anchor
@@ -406,10 +395,9 @@
    * this never recurses. The tenor's own single-path main-solve result
    * and its own typed Outright are always included as candidates too.
    */
-  function computeCandidateBest(t, chain) {
+  function computeCandidateBest(t, chain, price) {
     const curve = state.solved.curve;
-    const price = chain === 'payer' ? 'bid' : 'offer';
-    const key = chain + (price === 'bid' ? 'Bid' : 'Offer'); // payerBid or receiverOffer
+    const key = chain + (price === 'bid' ? 'Bid' : 'Offer'); // payerBid / payerOffer / receiverBid / receiverOffer
     const candidates = [{ source: null, val: curve[t] ? curve[t][key] : null }];
 
     // The tenor's own directly-typed Outright is a completely valid bid
@@ -438,7 +426,7 @@
       // Only fall back to the graph's single-path default if the other
       // tenor never typed that side directly. This is what guarantees
       // editing an Outright immediately updates every price derived
-      // from it, in EITHER direction.
+      // from it.
       const otherAnchor = (state.anchorByNode || {})[other];
       const otherOutright = otherAnchor ? (price === 'bid' ? otherAnchor.bid : otherAnchor.offer) : null;
       const otherVal = isNum(otherOutright) ? otherOutright : otherC[key];
@@ -460,8 +448,10 @@
     const best = {};
     TENORS.forEach((t) => {
       best[t] = {
-        payerBid: computeCandidateBest(t, 'payer'),
-        receiverOffer: computeCandidateBest(t, 'receiver'),
+        payerBid: computeCandidateBest(t, 'payer', 'bid'),
+        payerOffer: computeCandidateBest(t, 'payer', 'offer'),
+        receiverBid: computeCandidateBest(t, 'receiver', 'bid'),
+        receiverOffer: computeCandidateBest(t, 'receiver', 'offer'),
       };
     });
     return best;
@@ -762,11 +752,21 @@
    * so one pair can legitimately show one green number next to one
    * yellow number.
    */
-  function formatSourcedValue(cand, price) {
-    if (!cand || !isNum(cand.val)) return '';
-    const str = price === 'bid' ? fmtRatePairParts(cand.val, null)[0] : fmtRatePairParts(null, cand.val)[1];
-    const cls = cand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
-    return `<tspan class="${cls}">${str}</tspan>`;
+  /**
+   * Renders one column's price as a real "bid/offer" pair (e.g. "20/30"),
+   * same shorthand as any typed rate — "5/" if only a bid exists, "/10"
+   * if only an offer exists, "" if neither. Each number is colored by
+   * its OWN winning source independently: green if the typed Outright
+   * won that side, yellow if a chain-computed price won it — so one
+   * pair can legitimately show one green number next to one yellow one.
+   */
+  function buildPairMarkup(bidCand, offerCand) {
+    const bidStr = isNum(bidCand && bidCand.val) ? fmtRatePairParts(bidCand.val, null)[0] : '';
+    const offerStr = isNum(offerCand && offerCand.val) ? fmtRatePairParts(null, offerCand.val)[1] : '';
+    if (!bidStr && !offerStr) return '';
+    const bidClass = bidCand && bidCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
+    const offerClass = offerCand && offerCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
+    return `<tspan class="${bidClass}">${bidStr}</tspan><tspan class="ladder-val-slash">/</tspan><tspan class="${offerClass}">${offerStr}</tspan>`;
   }
 
   function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
@@ -806,24 +806,24 @@
       if (row.kind === 'tenor') {
         const c = curve[t];
         rowLabel = c.label;
-        // Payer column shows ONLY a bid — that's the side a Payer chain
-        // (or a typed Outright) can actually decide, in either direction.
-        // Receiver column shows ONLY an offer. If the available data
-        // can't decide that side at all, that column shows nothing —
-        // never a fabricated number. Each side independently picks the
-        // best candidate: typed Outright competes on equal footing with
+        // Each column shows a real bid/offer PAIR — the best available
+        // bid and the best available offer, independently, same "20/30"
+        // shorthand as any typed rate. Each side is chosen from the same
+        // candidate pool (typed Outright competes on equal footing with
         // every chain-derived candidate — see computeCandidateBest /
-        // computeSwapBest — highest bid wins, lowest offer wins. Colour
-        // shows the source: green = your typed Outright won, yellow =
-        // the premium chain created it.
+        // computeSwapBest): highest bid wins, lowest offer wins. Colour
+        // shows the source per number: green = your typed Outright won
+        // that side, yellow = the premium chain created it.
         const swapBest = (state.swapBest || {})[t] || {
           payerBid: { val: c.payerBid, source: null },
+          payerOffer: { val: c.payerOffer, source: null },
+          receiverBid: { val: c.receiverBid, source: null },
           receiverOffer: { val: c.receiverOffer, source: null },
         };
         row.linkSource = autoLinkSourceFor(t);
 
-        priceLinePayer = formatSourcedValue(swapBest.payerBid, 'bid');
-        priceLineReceiver = formatSourcedValue(swapBest.receiverOffer, 'offer');
+        priceLinePayer = buildPairMarkup(swapBest.payerBid, swapBest.payerOffer);
+        priceLineReceiver = buildPairMarkup(swapBest.receiverBid, swapBest.receiverOffer);
 
         payerPremLabel = fmtPremiumPtsShort(c.payerPremium);
         receiverPremLabel = fmtPremiumPtsShort(c.receiverPremium);
@@ -831,7 +831,9 @@
         // tenor — whichever value is available — so it's obvious at a
         // glance whether the auto-detected/refined figure looks right,
         // without having to open Rate Entries to check.
-        const bigFigSource = isNum(swapBest.payerBid.val) ? swapBest.payerBid.val : swapBest.receiverOffer.val;
+        const bigFigSource = isNum(swapBest.payerBid.val) ? swapBest.payerBid.val
+          : (isNum(swapBest.payerOffer.val) ? swapBest.payerOffer.val
+            : (isNum(swapBest.receiverBid.val) ? swapBest.receiverBid.val : swapBest.receiverOffer.val));
         bigFigLabel = isNum(bigFigSource) ? `${Math.floor(bigFigSource)}` : '';
         rowExtraClass = t === 'spot' ? ' ladder-row-spot' : '';
         payerValForBracket = c.payerBid;
