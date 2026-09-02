@@ -381,77 +381,83 @@
   }
 
   /**
-   * For a tenor reachable through more than one direct Premium Entry
-   * (e.g. Cash→1M, Spot→1M, and Tom→1M all typed), the single graph
-   * solve only ever follows ONE of those paths — the rest are silently
-   * ignored for display purposes. This works out every direct-entry
-   * candidate for a given (chain, price) combination and keeps the best
-   * one: the LARGER value for a bid, the SMALLER value for an offer —
-   * since a higher bid or a lower offer is the more competitive price.
-   *
-   * Each candidate is built from the OTHER tenor's own live price
-   * (preferring its own typed Outright over the graph's single-anchor
-   * default — see comment below) shifted by that entry's premium, so
-   * this never recurses. The tenor's own single-path main-solve result
-   * and its own typed Outright are always included as candidates too.
+   * DIRECTION-DEPENDENT theory, per the dealer's own convention:
+   *   - A Payer premium calculated FORWARD (near tenor known → deriving
+   *     the far one) produces a BID at the far tenor.
+   *   - The SAME Payer premium calculated BACKWARD (far tenor known →
+   *     deriving the near one) produces an OFFER at the near tenor —
+   *     NOT a bid. E.g. Spot 60/90 typed + Cash→Spot Payer premium 4 →
+   *     Cash gets an OFFER (82), Cash's bid stays blank.
+   *   - A Receiver premium mirrors this: forward → OFFER, backward →
+   *     BID.
+   * Each tenor's own directly-typed Outright is always a valid
+   * candidate on every slot (bid or offer, Payer or Receiver column) —
+   * a real quoted rate doesn't depend on any of the above. When more
+   * than one direct Premium Entry can produce a value for the same
+   * slot, the best one wins: the larger bid, the smaller offer.
+   * Only DIRECT Premium Entries are used here (not multi-hop chains
+   * through an intermediate tenor with no Outright of its own).
    */
-  function computeCandidateBest(t, chain, price) {
-    const curve = state.solved.curve;
-    const key = chain + (price === 'bid' ? 'Bid' : 'Offer'); // payerBid / payerOffer / receiverBid / receiverOffer
-    const candidates = [{ source: null, val: curve[t] ? curve[t][key] : null }];
+  function computeSwapBest() {
+    const pools = {};
+    TENORS.forEach((t) => {
+      pools[t] = { payerBid: [], payerOffer: [], receiverBid: [], receiverOffer: [] };
+    });
 
-    // The tenor's own directly-typed Outright is a completely valid bid
-    // (or offer) candidate too, regardless of which points chain built
-    // the other candidates — a real quoted rate doesn't stop being real
-    // just because it lost the "which anchor does the graph keep" fight.
-    // solveMarket only keeps ONE anchor per connected component, so a
-    // tenor's own typed rate can otherwise be invisible to the chain
-    // result entirely (e.g. Cash typed directly, but Spot is the anchor
-    // the graph happened to keep) — this restores it to the comparison.
-    const anchor = (state.anchorByNode || {})[t];
-    const outrightVal = anchor ? (price === 'bid' ? anchor.bid : anchor.offer) : null;
-    if (isNum(outrightVal)) candidates.push({ source: 'outright', val: outrightVal });
+    TENORS.forEach((t) => {
+      const anchor = (state.anchorByNode || {})[t];
+      if (!anchor) return;
+      if (isNum(anchor.bid)) {
+        pools[t].payerBid.push({ source: 'outright', val: anchor.bid });
+        pools[t].receiverBid.push({ source: 'outright', val: anchor.bid });
+      }
+      if (isNum(anchor.offer)) {
+        pools[t].payerOffer.push({ source: 'outright', val: anchor.offer });
+        pools[t].receiverOffer.push({ source: 'outright', val: anchor.offer });
+      }
+    });
 
     state.premiumEntries.forEach((pe) => {
-      if (pe.from !== t && pe.to !== t) return;
-      const other = pe.from === t ? pe.to : pe.from;
-      const otherC = curve[other];
-      if (!otherC) return;
       const prem = parsePremiumShorthand(pe.premium);
-      const rawVal = chain === 'payer' ? prem.payer : prem.receiver;
-      const edge = premiumToEdgeValue(pe.from, pe.to, rawVal, pe.perDay); // value from pe.from -> pe.to
-      if (!isNum(edge)) return;
-      // Prefer the OTHER tenor's own typed Outright for this exact price
-      // (bid or offer) when it has one — that's the real, live number.
-      // Only fall back to the graph's single-path default if the other
-      // tenor never typed that side directly. This is what guarantees
-      // editing an Outright immediately updates every price derived
-      // from it.
-      const otherAnchor = (state.anchorByNode || {})[other];
-      const otherOutright = otherAnchor ? (price === 'bid' ? otherAnchor.bid : otherAnchor.offer) : null;
-      const otherVal = isNum(otherOutright) ? otherOutright : otherC[key];
-      if (!isNum(otherVal)) return;
-      const goingForward = pe.to === t; // true: other is earlier, edge adds onto other to reach t
-      const val = goingForward ? otherVal + edge : otherVal - edge;
-      candidates.push({ source: other, val });
+      const payerEdge = premiumToEdgeValue(pe.from, pe.to, prem.payer, pe.perDay);
+      const receiverEdge = premiumToEdgeValue(pe.from, pe.to, prem.receiver, pe.perDay);
+      const fromAnchor = (state.anchorByNode || {})[pe.from];
+      const toAnchor = (state.anchorByNode || {})[pe.to];
+
+      if (isNum(payerEdge)) {
+        if (fromAnchor && isNum(fromAnchor.bid)) {
+          pools[pe.to].payerBid.push({ source: pe.from, val: fromAnchor.bid + payerEdge }); // forward -> bid
+        }
+        if (toAnchor && isNum(toAnchor.offer)) {
+          pools[pe.from].payerOffer.push({ source: pe.to, val: toAnchor.offer - payerEdge }); // backward -> offer
+        }
+      }
+      if (isNum(receiverEdge)) {
+        if (fromAnchor && isNum(fromAnchor.offer)) {
+          pools[pe.to].receiverOffer.push({ source: pe.from, val: fromAnchor.offer + receiverEdge }); // forward -> offer
+        }
+        if (toAnchor && isNum(toAnchor.bid)) {
+          pools[pe.from].receiverBid.push({ source: pe.to, val: toAnchor.bid - receiverEdge }); // backward -> bid
+        }
+      }
     });
 
-    let best = null;
-    candidates.forEach((cand) => {
-      if (!isNum(cand.val)) return;
-      if (!best || (price === 'bid' ? cand.val > best.val : cand.val < best.val)) best = cand;
-    });
-    return best ? { val: best.val, source: best.source } : { val: null, source: null };
-  }
+    const pickBest = (list, isBid) => {
+      let b = null;
+      list.forEach((cand) => {
+        if (!isNum(cand.val)) return;
+        if (!b || (isBid ? cand.val > b.val : cand.val < b.val)) b = cand;
+      });
+      return b || { val: null, source: null };
+    };
 
-  function computeSwapBest() {
     const best = {};
     TENORS.forEach((t) => {
       best[t] = {
-        payerBid: computeCandidateBest(t, 'payer', 'bid'),
-        payerOffer: computeCandidateBest(t, 'payer', 'offer'),
-        receiverBid: computeCandidateBest(t, 'receiver', 'bid'),
-        receiverOffer: computeCandidateBest(t, 'receiver', 'offer'),
+        payerBid: pickBest(pools[t].payerBid, true),
+        payerOffer: pickBest(pools[t].payerOffer, false),
+        receiverBid: pickBest(pools[t].receiverBid, true),
+        receiverOffer: pickBest(pools[t].receiverOffer, false),
       };
     });
     return best;
