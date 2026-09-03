@@ -393,9 +393,13 @@
    *     Cash gets an OFFER (82), Cash's bid stays blank.
    *   - A Receiver premium mirrors this: forward → OFFER, backward →
    *     BID.
-   * Each tenor's own directly-typed Outright ALWAYS wins its own slot —
-   * a chain-derived candidate never outcompetes a real typed rate just
-   * by being numerically "better".
+   * Every candidate for a tenor's slot — its own directly-typed
+   * Outright AND every chain-derived (created) price reaching that
+   * same slot — competes purely on price: highest bid wins the Payer
+   * side, lowest offer wins the Receiver side. The dashboard always
+   * shows the best available rate; the WINNING candidate's own source
+   * (outright vs created) is what decides its green/yellow colour, not
+   * the other way around.
    *
    * MULTI-HOP: a tenor doesn't need its own Outright to feed further
    * chains — its own CREATED value (from one Premium Entry) can itself
@@ -409,16 +413,6 @@
    */
   function computeSwapBest() {
     const pickBest = (list, isBid) => {
-      // A tenor's own directly-typed Outright ALWAYS wins on its own
-      // row — it's the real, dealt rate. It should never lose to a
-      // chain-derived candidate from some OTHER premium entry just
-      // because that candidate happens to be numerically "better" (a
-      // smaller offer, say) — that would silently substitute a
-      // computed guess for what the dealer actually typed. Chain
-      // candidates only compete with each other, and only fill the
-      // slot when there's no Outright for it at all.
-      const outright = list.find((c) => c.source === 'outright' && isNum(c.val));
-      if (outright) return outright;
       let b = null;
       list.forEach((cand) => {
         if (!isNum(cand.val)) return;
@@ -545,32 +539,15 @@
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
   }
 
-  /** [bid, offer] -> ["20","40"] shorthand within the shared Big Figure's hundred, else full rate. */
+  /** [bid, offer] -> ["336.20","336.40"] — always the FULL rate, same
+   *  format for every tenor and for both Payer and Receiver, regardless
+   *  of Big Figure. (Previously this showed short "points off the Big
+   *  Figure" for values that landed inside 0–100; that shorthand has
+   *  been removed so every tenor rate on the dashboard reads the same
+   *  way.) */
   function fmtRatePairParts(bid, offer) {
-    const bf = parseFloat(state.bigFigure);
-    const hasBF = isFinite(bf);
-    const shortBid = (v) => {
-      if (v === null) return '—';
-      if (hasBF) {
-        const points = (v - bf) * 100;
-        if (points >= 0 && points < 100) return fmtTrim(points);
-      }
-      return fmtNum(v);
-    };
-    // Offer now mirrors the Bid/Payer behavior above: only shown as
-    // short points-off-the-Big-Figure when those points land inside
-    // 0–100; otherwise it falls back to the full rate, so it never
-    // shows a confusing/unexpected number after crossing a hundred
-    // boundary (e.g. "102" or "-3").
-    const shortOffer = (v) => {
-      if (v === null) return '—';
-      if (hasBF) {
-        const points = (v - bf) * 100;
-        if (points >= 0 && points < 100) return fmtTrim(points);
-      }
-      return fmtNum(v);
-    };
-    return [shortBid(bid), shortOffer(offer)];
+    const full = (v) => (v === null ? '—' : fmtNum(v));
+    return [full(bid), full(offer)];
   }
 
   function renderHeader() {
@@ -825,10 +802,11 @@
     const topPad = 8;
     const height = topPad + n * slot + 5;
 
-    const colW = 78;
+    const viewW = 320; // widened from 260 to fit full rates like "336.20/336.40" now that shorthand points are gone
+    const colW = 100; // widened from 78 to match
     const payerX = 3;
     const payerRailX = payerX + colW + 8;
-    const receiverX = 260 - colW;
+    const receiverX = viewW - colW;
     const receiverRailX = receiverX - 8;
     const diffX = (payerRailX + receiverRailX) / 2;
     const matchPayerX = payerRailX + 6;
@@ -837,7 +815,7 @@
     const rowY = (i) => topPad + i * slot;
     const rowCenterY = (i) => rowY(i) + rowH / 2;
 
-    let svg = `<svg class="ladder-svg" viewBox="0 0 260 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
+    let svg = `<svg class="ladder-svg" viewBox="0 0 ${viewW} ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
     svg += `<text x="${payerX}" y="7" class="ladder-heading">Payer</text>`;
     svg += `<text x="${receiverX + colW}" y="7" text-anchor="end" class="ladder-heading">Receiver</text>`;
 
@@ -924,8 +902,8 @@
       row.receiverVal = receiverValForBracket;
 
       const editRects = showEditable ? `
-        <rect x="${payerX + colW - 42}" y="${y}" width="39" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
-        <rect x="${receiverX + colW - 42}" y="${y}" width="39" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
+        <rect x="${payerX + colW - 62}" y="${y}" width="59" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
+        <rect x="${receiverX + colW - 62}" y="${y}" width="59" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
       const outerPayerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${payerIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
       const outerReceiverClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${receiverIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
       // Single line per side: tenor name + Big Figure combined on the
