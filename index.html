@@ -107,6 +107,21 @@
       <select id="newPremiumTo" class="cell-input" style="width:120px;"></select>
       <button class="btn" id="addPremiumBtn">Add Premium</button>
     </div>
+
+    <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--border);">
+      <label class="field-label">Same premium to many tenors at once <span class="hint">e.g. Cash → 1W, 2W, 3W, 1M all sharing one premium — ctrl/cmd-click (or drag) to pick several</span></label>
+      <div class="btn-row" style="align-items:flex-start;">
+        <select id="bulkPremiumFrom" class="cell-input" style="width:120px;"></select>
+        <span class="small-text" style="margin-top:6px;">→</span>
+        <select id="bulkPremiumTo" class="cell-input" multiple size="6" style="width:150px; height:auto;"></select>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <input type="text" id="bulkPremiumValue" class="cell-input shorthand" style="width:110px;" placeholder="e.g. 5/5.5">
+          <label class="small-text" style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="bulkPremiumPerDay"> Per Day</label>
+        </div>
+        <button class="btn" id="addBulkPremiumBtn" style="margin-top:0;">Add to All Selected</button>
+      </div>
+    </div>
+
     <div class="btn-row" style="margin-top:14px;">
       <button class="btn" id="clearInputsBtn">Clear All Inputs</button>
     </div>
