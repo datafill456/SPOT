@@ -557,14 +557,17 @@
       }
       return fmtNum(v);
     };
-    // Offer never falls back to showing the full rate with its Big
-    // Figure baked in — always just the points off the shared Big
-    // Figure, even if that technically rolls past 0/100 (e.g. "102" or
-    // "-3"), so the offer column never suddenly shows a different,
-    // unexpected number just because it crossed a hundred boundary.
+    // Offer now mirrors the Bid/Payer behavior above: only shown as
+    // short points-off-the-Big-Figure when those points land inside
+    // 0–100; otherwise it falls back to the full rate, so it never
+    // shows a confusing/unexpected number after crossing a hundred
+    // boundary (e.g. "102" or "-3").
     const shortOffer = (v) => {
       if (v === null) return '—';
-      if (hasBF) return fmtTrim((v - bf) * 100);
+      if (hasBF) {
+        const points = (v - bf) * 100;
+        if (points >= 0 && points < 100) return fmtTrim(points);
+      }
       return fmtNum(v);
     };
     return [shortBid(bid), shortOffer(offer)];
