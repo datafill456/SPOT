@@ -142,6 +142,9 @@
     }
 
     if (hasBF && Math.abs(bidRaw) < 100 && Math.abs(offerRaw) < 100) {
+      // Offer rolls over to the next Big Figure whenever its points are
+      // smaller than the bid's (e.g. "80/20" -> offer is +1.00 above
+      // the bid's hundred) — this is the dealer's own convention.
       const bid = bf + bidRaw / 100;
       const offerBigFigure = offerRaw < bidRaw ? bf + 1 : bf;
       const offer = offerBigFigure + offerRaw / 100;
@@ -390,59 +393,32 @@
    *     Cash gets an OFFER (82), Cash's bid stays blank.
    *   - A Receiver premium mirrors this: forward → OFFER, backward →
    *     BID.
-   * Each tenor's own directly-typed Outright is always a valid
-   * candidate on every slot (bid or offer, Payer or Receiver column) —
-   * a real quoted rate doesn't depend on any of the above. When more
-   * than one direct Premium Entry can produce a value for the same
-   * slot, the best one wins: the larger bid, the smaller offer.
-   * Only DIRECT Premium Entries are used here (not multi-hop chains
-   * through an intermediate tenor with no Outright of its own).
+   * Each tenor's own directly-typed Outright ALWAYS wins its own slot —
+   * a chain-derived candidate never outcompetes a real typed rate just
+   * by being numerically "better".
+   *
+   * MULTI-HOP: a tenor doesn't need its own Outright to feed further
+   * chains — its own CREATED value (from one Premium Entry) can itself
+   * be used by another Premium Entry to derive a third tenor. E.g. Cash
+   * typed + Cash→Spot premium creates Spot's rate; Spot→1M premium then
+   * creates 1M's rate too, chaining through Spot's created value even
+   * though Spot itself was never typed. This is solved by relaxing the
+   * whole set of Premium Entries repeatedly (like Bellman-Ford) until
+   * every reachable value has propagated as far as the chain goes — safe
+   * and bounded since tenor chains are chronological (no cycles).
    */
   function computeSwapBest() {
-    const pools = {};
-    TENORS.forEach((t) => {
-      pools[t] = { payerBid: [], payerOffer: [], receiverBid: [], receiverOffer: [] };
-    });
-
-    TENORS.forEach((t) => {
-      const anchor = (state.anchorByNode || {})[t];
-      if (!anchor) return;
-      if (isNum(anchor.bid)) {
-        pools[t].payerBid.push({ source: 'outright', val: anchor.bid });
-        pools[t].receiverBid.push({ source: 'outright', val: anchor.bid });
-      }
-      if (isNum(anchor.offer)) {
-        pools[t].payerOffer.push({ source: 'outright', val: anchor.offer });
-        pools[t].receiverOffer.push({ source: 'outright', val: anchor.offer });
-      }
-    });
-
-    state.premiumEntries.forEach((pe) => {
-      const prem = parsePremiumShorthand(pe.premium);
-      const payerEdge = premiumToEdgeValue(pe.from, pe.to, prem.payer, pe.perDay);
-      const receiverEdge = premiumToEdgeValue(pe.from, pe.to, prem.receiver, pe.perDay);
-      const fromAnchor = (state.anchorByNode || {})[pe.from];
-      const toAnchor = (state.anchorByNode || {})[pe.to];
-
-      if (isNum(payerEdge)) {
-        if (fromAnchor && isNum(fromAnchor.bid)) {
-          pools[pe.to].payerBid.push({ source: pe.from, val: fromAnchor.bid + payerEdge }); // forward -> bid
-        }
-        if (toAnchor && isNum(toAnchor.offer)) {
-          pools[pe.from].payerOffer.push({ source: pe.to, val: toAnchor.offer - payerEdge }); // backward -> offer
-        }
-      }
-      if (isNum(receiverEdge)) {
-        if (fromAnchor && isNum(fromAnchor.offer)) {
-          pools[pe.to].receiverOffer.push({ source: pe.from, val: fromAnchor.offer + receiverEdge }); // forward -> offer
-        }
-        if (toAnchor && isNum(toAnchor.bid)) {
-          pools[pe.from].receiverBid.push({ source: pe.to, val: toAnchor.bid - receiverEdge }); // backward -> bid
-        }
-      }
-    });
-
     const pickBest = (list, isBid) => {
+      // A tenor's own directly-typed Outright ALWAYS wins on its own
+      // row — it's the real, dealt rate. It should never lose to a
+      // chain-derived candidate from some OTHER premium entry just
+      // because that candidate happens to be numerically "better" (a
+      // smaller offer, say) — that would silently substitute a
+      // computed guess for what the dealer actually typed. Chain
+      // candidates only compete with each other, and only fill the
+      // slot when there's no Outright for it at all.
+      const outright = list.find((c) => c.source === 'outright' && isNum(c.val));
+      if (outright) return outright;
       let b = null;
       list.forEach((cand) => {
         if (!isNum(cand.val)) return;
@@ -451,16 +427,69 @@
       return b || { val: null, source: null };
     };
 
-    const best = {};
+    const empty = () => ({ val: null, source: null });
+    let current = {};
     TENORS.forEach((t) => {
-      best[t] = {
-        payerBid: pickBest(pools[t].payerBid, true),
-        payerOffer: pickBest(pools[t].payerOffer, false),
-        receiverBid: pickBest(pools[t].receiverBid, true),
-        receiverOffer: pickBest(pools[t].receiverOffer, false),
+      const anchor = (state.anchorByNode || {})[t];
+      current[t] = {
+        payerBid: isNum(anchor && anchor.bid) ? { source: 'outright', val: anchor.bid } : empty(),
+        payerOffer: isNum(anchor && anchor.offer) ? { source: 'outright', val: anchor.offer } : empty(),
+        receiverBid: isNum(anchor && anchor.bid) ? { source: 'outright', val: anchor.bid } : empty(),
+        receiverOffer: isNum(anchor && anchor.offer) ? { source: 'outright', val: anchor.offer } : empty(),
       };
     });
-    return best;
+
+    // One pass can only propagate one hop further than the previous
+    // pass knew about, so repeat enough times for the longest possible
+    // chain (bounded by the number of tenors) to fully settle.
+    const maxIterations = TENORS.length;
+    for (let iter = 0; iter < maxIterations; iter++) {
+      const pools = {};
+      TENORS.forEach((t) => {
+        pools[t] = { payerBid: [], payerOffer: [], receiverBid: [], receiverOffer: [] };
+        ['payerBid', 'payerOffer', 'receiverBid', 'receiverOffer'].forEach((k) => {
+          if (isNum(current[t][k].val)) pools[t][k].push(current[t][k]); // carry forward what's already known
+        });
+      });
+
+      state.premiumEntries.forEach((pe) => {
+        const prem = parsePremiumShorthand(pe.premium);
+        const payerEdge = premiumToEdgeValue(pe.from, pe.to, prem.payer, pe.perDay);
+        const receiverEdge = premiumToEdgeValue(pe.from, pe.to, prem.receiver, pe.perDay);
+        const fromBest = current[pe.from];
+        const toBest = current[pe.to];
+
+        if (isNum(payerEdge)) {
+          if (fromBest && isNum(fromBest.payerBid.val)) {
+            pools[pe.to].payerBid.push({ source: pe.from, val: fromBest.payerBid.val + payerEdge }); // forward -> bid
+          }
+          if (toBest && isNum(toBest.payerOffer.val)) {
+            pools[pe.from].payerOffer.push({ source: pe.to, val: toBest.payerOffer.val - payerEdge }); // backward -> offer
+          }
+        }
+        if (isNum(receiverEdge)) {
+          if (fromBest && isNum(fromBest.receiverOffer.val)) {
+            pools[pe.to].receiverOffer.push({ source: pe.from, val: fromBest.receiverOffer.val + receiverEdge }); // forward -> offer
+          }
+          if (toBest && isNum(toBest.receiverBid.val)) {
+            pools[pe.from].receiverBid.push({ source: pe.to, val: toBest.receiverBid.val - receiverEdge }); // backward -> bid
+          }
+        }
+      });
+
+      const next = {};
+      TENORS.forEach((t) => {
+        next[t] = {
+          payerBid: pickBest(pools[t].payerBid, true),
+          payerOffer: pickBest(pools[t].payerOffer, false),
+          receiverBid: pickBest(pools[t].receiverBid, true),
+          receiverOffer: pickBest(pools[t].receiverOffer, false),
+        };
+      });
+      current = next;
+    }
+
+    return current;
   }
 
 
@@ -520,7 +549,7 @@
   function fmtRatePairParts(bid, offer) {
     const bf = parseFloat(state.bigFigure);
     const hasBF = isFinite(bf);
-    const short = (v) => {
+    const shortBid = (v) => {
       if (v === null) return '—';
       if (hasBF) {
         const points = (v - bf) * 100;
@@ -528,7 +557,17 @@
       }
       return fmtNum(v);
     };
-    return [short(bid), short(offer)];
+    // Offer never falls back to showing the full rate with its Big
+    // Figure baked in — always just the points off the shared Big
+    // Figure, even if that technically rolls past 0/100 (e.g. "102" or
+    // "-3"), so the offer column never suddenly shows a different,
+    // unexpected number just because it crossed a hundred boundary.
+    const shortOffer = (v) => {
+      if (v === null) return '—';
+      if (hasBF) return fmtTrim((v - bf) * 100);
+      return fmtNum(v);
+    };
+    return [shortBid(bid), shortOffer(offer)];
   }
 
   function renderHeader() {
@@ -1297,6 +1336,43 @@
       scheduleSaveDraft();
       const inputs = document.querySelectorAll('#premiumTableBody input[type="text"]');
       if (inputs.length) inputs[inputs.length - 1].focus();
+    });
+
+    // "Same premium to many tenors at once" — e.g. Cash → 1W, 2W, 3W, 1M
+    // all sharing one typed premium, instead of adding each pair one at
+    // a time and re-typing the same number into every row.
+    populateTenorSelect(document.getElementById('bulkPremiumFrom'));
+    populateTenorSelect(document.getElementById('bulkPremiumTo'));
+    document.getElementById('bulkPremiumFrom').value = 'cash';
+    document.getElementById('addBulkPremiumBtn').addEventListener('click', () => {
+      const from = document.getElementById('bulkPremiumFrom').value;
+      const toSelect = document.getElementById('bulkPremiumTo');
+      const targets = Array.from(toSelect.selectedOptions).map((o) => o.value).filter((v) => v !== from);
+      const premiumVal = document.getElementById('bulkPremiumValue').value.trim();
+      const perDay = document.getElementById('bulkPremiumPerDay').checked;
+      if (!targets.length) { alert('Select at least one Tenor 2 (ctrl/cmd-click or drag to pick several).'); return; }
+      if (!premiumVal) { alert('Type the premium value to apply to all selected tenors, e.g. 5/5.5.'); return; }
+      let added = 0;
+      targets.forEach((to) => {
+        const existing = state.premiumEntries.find((e) => e.from === from && e.to === to);
+        if (existing) {
+          existing.premium = premiumVal;
+          existing.perDay = perDay;
+        } else {
+          state.premiumEntries.push({ id: nextPremiumId++, from, to, premium: premiumVal, perDay });
+        }
+        added++;
+      });
+      // Reset the form for the next batch, but leave Tenor 1 as-is since
+      // it's common to add several batches off the same origin tenor.
+      Array.from(toSelect.options).forEach((o) => { o.selected = false; });
+      document.getElementById('bulkPremiumValue').value = '';
+      document.getElementById('bulkPremiumPerDay').checked = false;
+      recompute();
+      renderPremiumTable();
+      renderDownstream();
+      scheduleSaveDraft();
+      alert(`Added premium ${premiumVal} to ${added} tenor${added === 1 ? '' : 's'}.`);
     });
 
     document.getElementById('addBrokenDateBtn').addEventListener('click', () => {
