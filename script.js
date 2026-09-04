@@ -491,19 +491,19 @@
         // Payer process: forward -> BID at the far tenor, backward -> OFFER at the near tenor.
         if (isNum(payerEdge)) {
           if (fromBest && isNum(fromBest.bid.val)) {
-            pools[pe.to].bid.push({ source: pe.from, val: fromBest.bid.val + payerEdge });
+            pools[pe.to].bid.push({ source: pe.from, process: 'payer', val: fromBest.bid.val + payerEdge });
           }
           if (toBest && isNum(toBest.offer.val)) {
-            pools[pe.from].offer.push({ source: pe.to, val: toBest.offer.val - payerEdge });
+            pools[pe.from].offer.push({ source: pe.to, process: 'payer', val: toBest.offer.val - payerEdge });
           }
         }
         // Receiver process: forward -> OFFER at the far tenor, backward -> BID at the near tenor.
         if (isNum(receiverEdge)) {
           if (fromBest && isNum(fromBest.offer.val)) {
-            pools[pe.to].offer.push({ source: pe.from, val: fromBest.offer.val + receiverEdge });
+            pools[pe.to].offer.push({ source: pe.from, process: 'receiver', val: fromBest.offer.val + receiverEdge });
           }
           if (toBest && isNum(toBest.bid.val)) {
-            pools[pe.from].bid.push({ source: pe.to, val: toBest.bid.val - receiverEdge });
+            pools[pe.from].bid.push({ source: pe.to, process: 'receiver', val: toBest.bid.val - receiverEdge });
           }
         }
       });
@@ -829,13 +829,13 @@
    * won that side, yellow if a chain-computed price won it — so one
    * pair can legitimately show one green number next to one yellow one.
    */
-  function buildPairMarkup(bidCand, offerCand) {
+  function buildPairMarkup(bidCand, offerCand, bidTagMarkup = '', offerTagMarkup = '') {
     const bidStr = isNum(bidCand && bidCand.val) ? fmtRatePairParts(bidCand.val, null)[0] : '';
     const offerStr = isNum(offerCand && offerCand.val) ? fmtRatePairParts(null, offerCand.val)[1] : '';
     if (!bidStr && !offerStr) return '';
     const bidClass = bidCand && bidCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
     const offerClass = offerCand && offerCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
-    return `<tspan class="${bidClass}">${bidStr}</tspan><tspan class="ladder-val-slash">/</tspan><tspan class="${offerClass}">${offerStr}</tspan>`;
+    return `${bidTagMarkup}<tspan class="${bidClass}">${bidStr}</tspan><tspan class="ladder-val-slash">/</tspan>${offerTagMarkup}<tspan class="${offerClass}">${offerStr}</tspan>`;
   }
 
   /** Bid-offer spread at one tenor, in points, e.g. "12.5" or "—" if either side is missing. */
@@ -869,24 +869,39 @@
     svg += `<text x="${tenorX}" y="7" class="ladder-heading">Bid / Offer</text>`;
     svg += `<text x="${diffRightX}" y="7" text-anchor="end" class="ladder-heading">Diff</text>`;
 
-    // Pre-pass: figure out every row's link source FIRST (before
-    // rendering any row), so a source tenor appearing earlier in the
-    // ladder than the row it feeds can still get the right tag number.
+    // Pre-pass: figure out every row's link info FIRST (before rendering
+    // any row), so a source tenor appearing earlier in the ladder than
+    // the row it feeds can still get the right tag number. Bid and Offer
+    // are tracked SEPARATELY — a tenor's bid can be created from a
+    // different tenor (and via a different premium process) than its
+    // offer, since bid-chains only ever come from another tenor's bid
+    // (via Payer-forward or Receiver-backward) and offer-chains only
+    // ever come from another tenor's offer (via Payer-backward or
+    // Receiver-forward) — see computeSwapBest.
     const rowKeysAll = rows.map((r) => r.key);
     rows.forEach((row) => {
-      if (row.kind === 'tenor') row.linkSource = autoLinkSourceFor(row.key);
+      if (row.kind === 'tenor') {
+        const info = autoLinkInfoFor(row.key);
+        row.bidLink = info.bid;
+        row.offerLink = info.offer;
+      }
     });
 
     // Assign each SOURCE tenor a small number (1, 2, 3…), in ladder
     // order — every row it creates a rate for shows that same number
     // next to its price, and the source row itself shows the number
     // next to its tenor name, so matching numbers = matching link.
+    // Shared across bid-links and offer-links: if a tenor is the source
+    // for both, it's still just "one" source and keeps one number.
     const linkTagNumber = {};
     let nextLinkTag = 1;
     rows.forEach((row) => {
-      if (row.kind !== 'tenor' || !row.linkSource) return;
-      if (rowKeysAll.indexOf(row.linkSource) === -1 || row.linkSource === row.key) return;
-      if (!linkTagNumber[row.linkSource]) linkTagNumber[row.linkSource] = nextLinkTag++;
+      if (row.kind !== 'tenor') return;
+      [row.bidLink, row.offerLink].forEach((link) => {
+        if (!link) return;
+        if (rowKeysAll.indexOf(link.source) === -1 || link.source === row.key) return;
+        if (!linkTagNumber[link.source]) linkTagNumber[link.source] = nextLinkTag++;
+      });
     });
 
     rows.forEach((row, i) => {
@@ -911,7 +926,21 @@
           offer: { val: c.receiverOffer, source: null },
         };
 
-        priceLine = buildPairMarkup(swapBest.bid, swapBest.offer);
+        // Each side's link tag is colored by which PROCESS actually
+        // created it — Payer or Receiver — independent of whether the
+        // number itself is a Bid or an Offer (either side can be built
+        // by either process, depending on chain direction).
+        const tagMarkup = (link) => {
+          if (!link) return '';
+          const num = linkTagNumber[link.source];
+          if (!num) return '';
+          const cls = link.process === 'receiver' ? 'ladder-link-tag-receiver' : 'ladder-link-tag-payer';
+          return `<tspan class="${cls}">${num} </tspan>`;
+        };
+        const bidTagMarkup = tagMarkup(row.bidLink);
+        const offerTagMarkup = tagMarkup(row.offerLink);
+
+        priceLine = buildPairMarkup(swapBest.bid, swapBest.offer, bidTagMarkup, offerTagMarkup);
         spreadLabel = fmtSpreadPts(swapBest.bid.val, swapBest.offer.val);
 
         // "Premium from Spot" and the Big Figure both prefer the bid
@@ -964,15 +993,12 @@
       }
       row.val = valForBracket;
 
-      // Matching link tags: if THIS row is a source other rows were
+      // Source-identity tag: if THIS row is a source other rows were
       // created from, show its identity number next to the tenor name.
-      // If THIS row was itself created from another row, show that
-      // source's number next to the price — same number in both
-      // places = that's the link.
+      // (The reverse — a derived row showing which number it came from —
+      // is already embedded in priceLine above, per-side.)
       const ownTagNum = linkTagNumber[t];
       const ownTag = ownTagNum ? `<tspan class="ladder-link-tag"> ${ownTagNum}</tspan>` : '';
-      const sourceTagNum = row.linkSource ? linkTagNumber[row.linkSource] : null;
-      const sourceTag = sourceTagNum ? `<tspan class="ladder-link-tag">${sourceTagNum} </tspan>` : '';
 
       const editRect = showEditable ? `
         <rect x="${tenorX + colW - 94}" y="${y}" width="91" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
@@ -982,7 +1008,7 @@
       svg += `
         <rect x="${tenorX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
         <text x="${tenorX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan>${ownTag}</text>
-        <text x="${tenorX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerClass}" pointer-events="none">${sourceTag}${priceLine}<tspan class="ladder-premium-inline"> ${premLabel}</tspan></text>
+        <text x="${tenorX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerClass}" pointer-events="none">${priceLine}<tspan class="ladder-premium-inline"> ${premLabel}</tspan></text>
         ${editRect}
 
         <rect x="${diffX}" y="${y}" width="${diffColW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
@@ -1003,27 +1029,33 @@
     }
 
     // Automatic, non-interactive source curves: whenever a tenor's best
-    // price is a CREATED one (yellow — built from another tenor via the
-    // premium chain), draw one thin dashed line from that source row to
-    // this row, no click needed and no text label — just a quiet visual
-    // trace of where the number came from. One line per row max (the
-    // same single winning source used for coloring), to keep it readable
-    // rather than a tangle of every possible chain path.
+    // Bid and/or Offer is a CREATED one, draw one thin dashed line from
+    // that source row to this row — one line per link, colored by
+    // whichever process (Payer/Receiver) created it. If Bid and Offer
+    // both trace back to the same source row, only one line is drawn
+    // (they'd overlap anyway).
     const rowKeys = rows.map((r) => r.key);
     rows.forEach((row, i) => {
-      if (!row.linkSource) return;
-      const sourceIdx = rowKeys.indexOf(row.linkSource);
-      if (sourceIdx === -1 || sourceIdx === i) return;
-      const lo = Math.min(sourceIdx, i);
-      const hi = Math.max(sourceIdx, i);
-      const y1 = rowCenterY(lo);
-      const y2 = rowCenterY(hi);
-      const x = railX;
-      const skips = hi - lo > 1;
-      const d = skips
-        ? `M ${x} ${y1} Q ${x + 16} ${(y1 + y2) / 2} ${x} ${y2}`
-        : `M ${x} ${y1} L ${x} ${y2}`;
-      svg += `<path d="${d}" fill="none" class="ladder-source-line"></path>`;
+      const links = [row.bidLink, row.offerLink].filter(Boolean);
+      const seen = new Set();
+      links.forEach((link) => {
+        const sourceIdx = rowKeys.indexOf(link.source);
+        if (sourceIdx === -1 || sourceIdx === i) return;
+        const dedupeKey = `${sourceIdx}:${link.process}`;
+        if (seen.has(dedupeKey)) return;
+        seen.add(dedupeKey);
+        const lo = Math.min(sourceIdx, i);
+        const hi = Math.max(sourceIdx, i);
+        const y1 = rowCenterY(lo);
+        const y2 = rowCenterY(hi);
+        const x = railX;
+        const skips = hi - lo > 1;
+        const d = skips
+          ? `M ${x} ${y1} Q ${x + 16} ${(y1 + y2) / 2} ${x} ${y2}`
+          : `M ${x} ${y1} L ${x} ${y2}`;
+        const lineCls = link.process === 'receiver' ? 'ladder-source-line-receiver' : 'ladder-source-line-payer';
+        svg += `<path d="${d}" fill="none" class="${lineCls}"></path>`;
+      });
     });
 
     svg += `</svg>`;
@@ -1099,9 +1131,11 @@
   }
 
   /** Same "which tenor produced the best price" logic as the 🔗 button, reused so editing a rate also reveals where a created price is coming from. */
-  function autoLinkSourceFor(tenor) {
+  /** Per-side link info for a tenor: { bid: {source, process}|null, offer: {source, process}|null }. null when that side is a typed Outright (nothing to link) or has no value at all. */
+  function autoLinkInfoFor(tenor) {
     const best = (state.swapBest || {})[tenor] || {};
-    return (best.bid && best.bid.source) || (best.offer && best.offer.source);
+    const side = (cand) => (cand && cand.source && cand.source !== 'outright') ? { source: cand.source, process: cand.process } : null;
+    return { bid: side(best.bid), offer: side(best.offer) };
   }
 
   function applyLadderEdit(tenor, raw) {
