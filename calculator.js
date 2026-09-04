@@ -53,44 +53,71 @@ const FXCalculator = (function () {
    * Build the full value-date ladder from today's trade date.
    *
    * Cash (same-day) and Tom (next-day) both need the US side open to be
-   * real settleable USD value dates — not just Sri Lanka. A day that's a
-   * US holiday but otherwise a normal Sri Lankan working day (e.g. Labor
-   * Day, Thanksgiving) isn't "Cash/Tom roll forward to the next day"
-   * like a normal SL holiday/weekend gap would be; there simply ARE no
-   * Cash or Tom value dates today, so both are dropped from the ladder
-   * entirely (`cashHidden: true`, `tomHidden: true`, `cash`/`tom: null`).
-   * Spot and every forward tenor still need a real anchor to build off,
-   * so on that kind of day they're built from the previous day that was
-   * a genuine working day on BOTH sides (`referenceDate`), instead of
-   * from today. A normal working day is unaffected: referenceDate is
-   * just today's Cash date, exactly as before.
+   * real settleable USD value dates — not just Sri Lanka.
+   *
+   * CASH: a day that's a US holiday but otherwise a normal Sri Lankan
+   * working day (e.g. Labor Day, Thanksgiving) isn't "Cash rolls forward
+   * to the next day" like a normal SL holiday/weekend gap would be;
+   * there simply IS no Cash value date today, so it's dropped from the
+   * ladder entirely (`cashHidden: true`, `cash: null`) and everything
+   * else builds off the previous day that was a genuine working day on
+   * BOTH sides (`referenceDate`) instead of from today.
+   *
+   * TOM: same idea, one slot over — the calendar day immediately after
+   * Cash/referenceDate that Sri Lanka itself would treat as the next
+   * business day. If THAT specific day is a pure US holiday, Tom can't
+   * exist there either (`tomHidden: true`, `tom: null`) — and instead of
+   * pushing Spot a further hop out past it, Spot collapses back to take
+   * that same slot (the next day genuinely open on both sides), exactly
+   * where Tom would otherwise have landed.
+   *
+   * A normal working day, with no US holiday sitting in either the Cash
+   * or Tom slot, is completely unaffected — same dates as always.
    */
   function buildValueDates(tradeDate) {
     const cal = FXCalendar;
 
     // A "pure" US holiday: Sri Lanka itself is open (not a weekend, not
     // an SL bank holiday) but the US side isn't — this is the only case
-    // that hides Cash/Tom outright rather than rolling them forward.
-    // When the US holiday coincides with a weekend/SL holiday, that's
-    // just an ordinary non-working day and Cash/Tom roll forward as
-    // they always have.
-    const isPureUSHoliday = cal.isUSHoliday(tradeDate) && !cal.isWeekend(tradeDate) && !cal.isHoliday(tradeDate);
+    // that hides a value date outright rather than rolling it forward.
+    // When a US holiday coincides with a weekend/SL holiday, that's just
+    // an ordinary non-working day and dates roll forward as they always
+    // have.
+    const isPureUSHoliday = (d) => cal.isUSHoliday(d) && !cal.isWeekend(d) && !cal.isHoliday(d);
 
     let cash = null;
-    let tom = null;
-    const cashHidden = isPureUSHoliday;
-    const tomHidden = isPureUSHoliday;
+    const cashHidden = isPureUSHoliday(tradeDate);
     let referenceDate;
 
-    if (isPureUSHoliday) {
+    if (cashHidden) {
       referenceDate = cal.previousWorkingDay(tradeDate);
     } else {
       cash = cal.isWorkingDay(tradeDate) ? new Date(tradeDate) : cal.rollFollowing(tradeDate);
       referenceDate = cash;
     }
 
-    if (!tomHidden) tom = cal.addWorkingDays(referenceDate, 1);
-    const spot = cal.addWorkingDays(referenceDate, 2);
+    // The "natural" T+1 slot: the very next day Sri Lanka itself would
+    // call a business day (weekend/SL-holiday skipped), before even
+    // considering whether the US is open that day.
+    let candidateTom = cal.addDays(referenceDate, 1);
+    while (cal.isWeekend(candidateTom) || cal.isHoliday(candidateTom)) {
+      candidateTom = cal.addDays(candidateTom, 1);
+    }
+    // candidateTom is already guaranteed SL-open, so a US holiday there
+    // is necessarily a "pure" one.
+    const tomHidden = cal.isUSHoliday(candidateTom);
+
+    let tom, spot;
+    if (tomHidden) {
+      tom = null;
+      // Skips straight past the US-holiday slot to the next day open on
+      // both sides — the same date Tom would have landed on under the
+      // old roll-forward behavior, now claimed by Spot instead.
+      spot = cal.addWorkingDays(referenceDate, 1);
+    } else {
+      tom = candidateTom;
+      spot = cal.addWorkingDays(referenceDate, 2);
+    }
 
     const dates = { cash, tom, spot };
     dates['1W'] = cal.addTenorWeeks(spot, 1);
@@ -110,7 +137,7 @@ const FXCalculator = (function () {
         return;
       }
       days[t] = cal.calendarDaysBetween(spot, dates[t]); // negative for cash/tom — this is what the swap-point solver and Per Day premiums use throughout, since Spot is the real market anchor for forward points
-      daysFromCash[t] = cal.calendarDaysBetween(referenceDate, dates[t]); // referenceDate as day 0 — for display (NOD column); equals Cash on a normal day, and the previous fully-open working day when Cash/Tom are hidden
+      daysFromCash[t] = cal.calendarDaysBetween(referenceDate, dates[t]); // referenceDate as day 0 — for display (NOD column); equals Cash on a normal day, and the previous fully-open working day when Cash is hidden
     });
 
     return { cash, tom, spot, dates, days, daysFromCash, cashHidden, tomHidden, referenceDate };
