@@ -60,6 +60,16 @@
 
   function isNum(v) { return typeof v === 'number' && !Number.isNaN(v); }
 
+  /** True when today has no Cash value date (a pure US holiday — see FXCalculator.buildValueDates). */
+  function isCashHidden() {
+    return !!(state.valueDates && state.valueDates.cashHidden);
+  }
+
+  /** Standard tenor list actually usable today — Cash dropped whenever it's hidden. */
+  function visibleTenors() {
+    return isCashHidden() ? TENORS.filter((t) => t !== 'cash') : TENORS;
+  }
+
   /**
    * Native <input type="date"> pickers can be awkward to type a year into
    * on some browsers/devices, so date correction/entry fields use a plain
@@ -188,7 +198,11 @@
       const d = FXCalendar.parse(iso);
       state.valueDates.dates[t] = d;
       state.valueDates.days[t] = FXCalendar.calendarDaysBetween(state.valueDates.spot, d);
-      state.valueDates.daysFromCash[t] = FXCalendar.calendarDaysBetween(state.valueDates.cash, d);
+      // Cash may be hidden (null) today — fall back to referenceDate,
+      // the same anchor Tom/Spot were built from, so this never crashes.
+      state.valueDates.daysFromCash[t] = FXCalendar.calendarDaysBetween(
+        state.valueDates.cash || state.valueDates.referenceDate, d
+      );
       if (t === 'spot') state.valueDates.spot = d;
       if (t === 'cash') state.valueDates.cash = d;
       if (t === 'tom') state.valueDates.tom = d;
@@ -578,7 +592,7 @@
   }
 
   function populateTenorSelect(sel) {
-    sel.innerHTML = TENORS.map((t) => `<option value="${t}">${LABELS[t]}</option>`).join('');
+    sel.innerHTML = visibleTenors().map((t) => `<option value="${t}">${LABELS[t]}</option>`).join('');
   }
 
   /* ==================================================================
@@ -591,7 +605,7 @@
       const date = state.valueDates.dates[re.node];
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td><span class="tenor-name">${LABELS[re.node]}</span><span class="tenor-date">${fmtDateLabel(date)}</span></td>
+        <td><span class="tenor-name">${LABELS[re.node]}</span><span class="tenor-date">${date ? fmtDateLabel(date) : '—'}</span></td>
         <td><input type="text" class="cell-input shorthand" data-rate-id="${re.id}" placeholder="30/40 or 75/ or /75"></td>
         <td><input type="text" class="cell-input" style="width:70px;" data-bf-id="${re.id}" placeholder="auto"></td>
         <td><button class="btn danger" data-remove-rate="${re.id}" style="padding:3px 8px;">✕</button></td>
@@ -705,17 +719,26 @@
     const el = document.getElementById('solverStatus');
     const { payerSpotBid, payerSpotOffer, receiverSpotBid, receiverSpotOffer } = state.solved;
     const anySpot = payerSpotBid !== null || payerSpotOffer !== null || receiverSpotBid !== null || receiverSpotOffer !== null;
-    const connectedCount = TENORS.filter((t) => state.solved.curve[t].payerPremium !== null || state.solved.curve[t].receiverPremium !== null).length;
+    const visible = visibleTenors();
+    const connectedCount = visible.filter((t) => state.solved.curve[t].payerPremium !== null || state.solved.curve[t].receiverPremium !== null).length;
+
+    // Deliberate, not a bug: on a pure US holiday there's no same-day
+    // USD settlement, so Cash drops off the ladder and Tom/Spot/forwards
+    // are built from the last day both sides were actually open —
+    // called out here with exactly which date that is.
+    const cashNote = isCashHidden()
+      ? ` Cash hidden today (US holiday) — ladder anchored from ${fmtDateLabel(state.valueDates.referenceDate)}.`
+      : '';
 
     if (!anySpot) {
       el.className = 'solver-status warn';
-      el.textContent = connectedCount > 1
+      el.textContent = (connectedCount > 1
         ? `${connectedCount} tenors linked by points, but no anchor yet — add a Rate for Spot (or any linked tenor) to see actual levels.`
-        : 'Add a Rate for at least one value date, then a Premium between any two, and the rest chains off it.';
+        : 'Add a Rate for at least one value date, then a Premium between any two, and the rest chains off it.') + cashNote;
       return;
     }
     el.className = 'solver-status ok';
-    el.textContent = `Spot solved — Payer ${fmtNum(payerSpotBid)}/${fmtNum(payerSpotOffer)} · Receiver ${fmtNum(receiverSpotBid)}/${fmtNum(receiverSpotOffer)} · ${connectedCount} of ${TENORS.length} tenors linked`;
+    el.textContent = `Spot solved — Payer ${fmtNum(payerSpotBid)}/${fmtNum(payerSpotOffer)} · Receiver ${fmtNum(receiverSpotBid)}/${fmtNum(receiverSpotOffer)} · ${connectedCount} of ${visible.length} tenors linked` + cashNote;
   }
 
   /* ==================================================================
@@ -757,7 +780,7 @@
    * on at the end.
    */
   function buildDisplayRows() {
-    const rows = TENORS.map((t) => ({
+    const rows = visibleTenors().map((t) => ({
       key: t,
       kind: 'tenor',
       label: LABELS[t],
@@ -1216,10 +1239,12 @@
     tbody.innerHTML = TENORS.map((t) => {
       const d = state.valueDates.dates[t];
       const nod = NEAR_DATES.includes(t) || t === 'spot' ? state.valueDates.daysFromCash[t] : state.valueDates.days[t];
+      const dateCell = d ? fmtDateLabel(d)
+        : (t === 'cash' && isCashHidden() ? 'Hidden — US holiday' : '—');
       return `
         <tr>
           <td class="tenor-name">${LABELS[t]}</td>
-          <td class="mono">${d ? fmtDateLabel(d) : '—'}</td>
+          <td class="mono">${dateCell}</td>
           <td class="mono" style="text-align:right;">${isNum(nod) ? nod : '—'}</td>
           <td><input type="text" class="cell-input" style="width:110px;" placeholder="DD-MM-YYYY" data-value-date-tenor="${t}" value="${isoToDisplayDate(state.valueDateOverrides[t])}"></td>
         </tr>
@@ -1325,7 +1350,7 @@
 
     populateTenorSelect(document.getElementById('newPremiumFrom'));
     populateTenorSelect(document.getElementById('newPremiumTo'));
-    document.getElementById('newPremiumFrom').value = 'cash';
+    document.getElementById('newPremiumFrom').value = isCashHidden() ? 'tom' : 'cash';
     document.getElementById('newPremiumTo').value = 'spot';
     document.getElementById('addPremiumBtn').addEventListener('click', () => {
       const from = document.getElementById('newPremiumFrom').value;
@@ -1346,7 +1371,7 @@
     // a time and re-typing the same number into every row.
     populateTenorSelect(document.getElementById('bulkPremiumFrom'));
     populateTenorSelect(document.getElementById('bulkPremiumTo'));
-    document.getElementById('bulkPremiumFrom').value = 'cash';
+    document.getElementById('bulkPremiumFrom').value = isCashHidden() ? 'tom' : 'cash';
     document.getElementById('addBulkPremiumBtn').addEventListener('click', () => {
       const from = document.getElementById('bulkPremiumFrom').value;
       const toSelect = document.getElementById('bulkPremiumTo');
