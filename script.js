@@ -412,9 +412,20 @@
    *     Cash gets an OFFER (82), Cash's bid stays blank.
    *   - A Receiver premium mirrors this: forward → OFFER, backward →
    *     BID.
-   * Each tenor's own directly-typed Outright ALWAYS wins its own slot —
-   * a chain-derived candidate never outcompetes a real typed rate just
-   * by being numerically "better".
+   * The dashboard shows ONE common Bid/Offer per tenor, not separate
+   * Payer/Receiver columns — but it still USES both processes to build
+   * that single number: a forward-payer-premium candidate and a
+   * backward-receiver-premium candidate both produce a BID for the same
+   * tenor, so they compete against each other (highest wins); likewise
+   * a backward-payer candidate and a forward-receiver candidate both
+   * produce an OFFER, and compete the same way (lowest wins). A tenor's
+   * own directly-typed Outright competes on equal footing with every
+   * chain-created candidate reaching that same slot — whichever is
+   * genuinely the best (tightest) price wins the dashboard, and its own
+   * source (outright vs created) decides the green/yellow colour. If a
+   * typed rate loses to a created one, that's worth a look at the
+   * Mismatch banner — it usually means the typed rates and premiums
+   * elsewhere don't perfectly tie together.
    *
    * MULTI-HOP: a tenor doesn't need its own Outright to feed further
    * chains — its own CREATED value (from one Premium Entry) can itself
@@ -427,17 +438,18 @@
    * and bounded since tenor chains are chronological (no cycles).
    */
   function computeSwapBest() {
+    // Every candidate for a tenor's bid (or offer) slot — its own
+    // directly-typed Outright AND every chain-created price reaching
+    // that same slot — competes purely on price: highest bid wins,
+    // lowest offer wins. The dashboard always shows the best available
+    // rate for that tenor; the WINNING candidate's own source (outright
+    // vs created) is what decides its green/yellow colour, not the
+    // other way around. If your typed rate and a chain-created price
+    // disagree by a lot, that's worth checking the Mismatch banner for
+    // — it usually means the typed rates and premiums elsewhere don't
+    // perfectly tie together — but the ladder itself will just show
+    // whichever number is tighter.
     const pickBest = (list, isBid) => {
-      // A tenor's own directly-typed Outright ALWAYS wins on its own
-      // row — it's the real, dealt rate. It should never lose to a
-      // chain-derived candidate from some OTHER premium entry just
-      // because that candidate happens to be numerically "better" (a
-      // smaller offer, say) — that would silently substitute a
-      // computed guess for what the dealer actually typed. Chain
-      // candidates only compete with each other, and only fill the
-      // slot when there's no Outright for it at all.
-      const outright = list.find((c) => c.source === 'outright' && isNum(c.val));
-      if (outright) return outright;
       let b = null;
       list.forEach((cand) => {
         if (!isNum(cand.val)) return;
@@ -451,10 +463,8 @@
     TENORS.forEach((t) => {
       const anchor = (state.anchorByNode || {})[t];
       current[t] = {
-        payerBid: isNum(anchor && anchor.bid) ? { source: 'outright', val: anchor.bid } : empty(),
-        payerOffer: isNum(anchor && anchor.offer) ? { source: 'outright', val: anchor.offer } : empty(),
-        receiverBid: isNum(anchor && anchor.bid) ? { source: 'outright', val: anchor.bid } : empty(),
-        receiverOffer: isNum(anchor && anchor.offer) ? { source: 'outright', val: anchor.offer } : empty(),
+        bid: isNum(anchor && anchor.bid) ? { source: 'outright', val: anchor.bid } : empty(),
+        offer: isNum(anchor && anchor.offer) ? { source: 'outright', val: anchor.offer } : empty(),
       };
     });
 
@@ -465,8 +475,8 @@
     for (let iter = 0; iter < maxIterations; iter++) {
       const pools = {};
       TENORS.forEach((t) => {
-        pools[t] = { payerBid: [], payerOffer: [], receiverBid: [], receiverOffer: [] };
-        ['payerBid', 'payerOffer', 'receiverBid', 'receiverOffer'].forEach((k) => {
+        pools[t] = { bid: [], offer: [] };
+        ['bid', 'offer'].forEach((k) => {
           if (isNum(current[t][k].val)) pools[t][k].push(current[t][k]); // carry forward what's already known
         });
       });
@@ -478,20 +488,22 @@
         const fromBest = current[pe.from];
         const toBest = current[pe.to];
 
+        // Payer process: forward -> BID at the far tenor, backward -> OFFER at the near tenor.
         if (isNum(payerEdge)) {
-          if (fromBest && isNum(fromBest.payerBid.val)) {
-            pools[pe.to].payerBid.push({ source: pe.from, val: fromBest.payerBid.val + payerEdge }); // forward -> bid
+          if (fromBest && isNum(fromBest.bid.val)) {
+            pools[pe.to].bid.push({ source: pe.from, val: fromBest.bid.val + payerEdge });
           }
-          if (toBest && isNum(toBest.payerOffer.val)) {
-            pools[pe.from].payerOffer.push({ source: pe.to, val: toBest.payerOffer.val - payerEdge }); // backward -> offer
+          if (toBest && isNum(toBest.offer.val)) {
+            pools[pe.from].offer.push({ source: pe.to, val: toBest.offer.val - payerEdge });
           }
         }
+        // Receiver process: forward -> OFFER at the far tenor, backward -> BID at the near tenor.
         if (isNum(receiverEdge)) {
-          if (fromBest && isNum(fromBest.receiverOffer.val)) {
-            pools[pe.to].receiverOffer.push({ source: pe.from, val: fromBest.receiverOffer.val + receiverEdge }); // forward -> offer
+          if (fromBest && isNum(fromBest.offer.val)) {
+            pools[pe.to].offer.push({ source: pe.from, val: fromBest.offer.val + receiverEdge });
           }
-          if (toBest && isNum(toBest.receiverBid.val)) {
-            pools[pe.from].receiverBid.push({ source: pe.to, val: toBest.receiverBid.val - receiverEdge }); // backward -> bid
+          if (toBest && isNum(toBest.bid.val)) {
+            pools[pe.from].bid.push({ source: pe.to, val: toBest.bid.val - receiverEdge });
           }
         }
       });
@@ -499,10 +511,8 @@
       const next = {};
       TENORS.forEach((t) => {
         next[t] = {
-          payerBid: pickBest(pools[t].payerBid, true),
-          payerOffer: pickBest(pools[t].payerOffer, false),
-          receiverBid: pickBest(pools[t].receiverBid, true),
-          receiverOffer: pickBest(pools[t].receiverOffer, false),
+          bid: pickBest(pools[t].bid, true),
+          offer: pickBest(pools[t].offer, false),
         };
       });
       current = next;
@@ -564,32 +574,13 @@
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
   }
 
-  /** [bid, offer] -> ["20","40"] shorthand within the shared Big Figure's hundred, else full rate. */
+  /** [bid, offer] -> ["336.20","336.40"] — always the FULL rate, same
+   *  format for every tenor and for both sides, regardless of Big
+   *  Figure. (Shorthand "points off the Big Figure" has been removed so
+   *  every tenor rate on the dashboard reads the same way.) */
   function fmtRatePairParts(bid, offer) {
-    const bf = parseFloat(state.bigFigure);
-    const hasBF = isFinite(bf);
-    const shortBid = (v) => {
-      if (v === null) return '—';
-      if (hasBF) {
-        const points = (v - bf) * 100;
-        if (points >= 0 && points < 100) return fmtTrim(points);
-      }
-      return fmtNum(v);
-    };
-    // Offer now mirrors the Bid/Payer behavior above: only shown as
-    // short points-off-the-Big-Figure when those points land inside
-    // 0–100; otherwise it falls back to the full rate, so it never
-    // shows a confusing/unexpected number after crossing a hundred
-    // boundary (e.g. "102" or "-3").
-    const shortOffer = (v) => {
-      if (v === null) return '—';
-      if (hasBF) {
-        const points = (v - bf) * 100;
-        if (points >= 0 && points < 100) return fmtTrim(points);
-      }
-      return fmtNum(v);
-    };
-    return [shortBid(bid), shortOffer(offer)];
+    const full = (v) => (v === null ? '—' : fmtNum(v));
+    return [full(bid), full(offer)];
   }
 
   function renderHeader() {
@@ -847,6 +838,12 @@
     return `<tspan class="${bidClass}">${bidStr}</tspan><tspan class="ladder-val-slash">/</tspan><tspan class="${offerClass}">${offerStr}</tspan>`;
   }
 
+  /** Bid-offer spread at one tenor, in points, e.g. "12.5" or "—" if either side is missing. */
+  function fmtSpreadPts(bidVal, offerVal) {
+    if (!isNum(bidVal) || !isNum(offerVal)) return '—';
+    return fmtTrim((offerVal - bidVal) * 100);
+  }
+
   function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
     const rows = buildDisplayRows();
     const n = rows.length;
@@ -855,67 +852,60 @@
     const topPad = 8;
     const height = topPad + n * slot + 5;
 
-    const colW = 78;
-    const payerX = 3;
-    const payerRailX = payerX + colW + 8;
-    const receiverX = 260 - colW;
-    const receiverRailX = receiverX - 8;
-    const diffX = (payerRailX + receiverRailX) / 2;
-    const matchPayerX = payerRailX + 6;
-    const matchReceiverX = receiverRailX - 6;
+    // One common Bid/Offer column (merging the Payer-process and
+    // Receiver-process candidates — see computeSwapBest) plus a Diff
+    // column showing that tenor's own bid-offer spread. No more
+    // separate Payer/Receiver columns.
+    const viewW = 300;
+    const tenorX = 3;
+    const colW = 190; // tenor label + price share this one column
+    const railX = tenorX + colW + 8; // between-tenor premium bracket rail
+    const diffRightX = viewW - 4; // Diff column, right-anchored
 
     const rowY = (i) => topPad + i * slot;
     const rowCenterY = (i) => rowY(i) + rowH / 2;
 
-    let svg = `<svg class="ladder-svg" viewBox="0 0 260 ${height}" width="100%" role="img" aria-label="Payer and Receiver rate ladder with premium brackets">`;
-    svg += `<text x="${payerX}" y="7" class="ladder-heading">Payer</text>`;
-    svg += `<text x="${receiverX + colW}" y="7" text-anchor="end" class="ladder-heading">Receiver</text>`;
+    let svg = `<svg class="ladder-svg" viewBox="0 0 ${viewW} ${height}" width="100%" role="img" aria-label="Rate ladder with bid/offer and spread">`;
+    svg += `<text x="${tenorX}" y="7" class="ladder-heading">Bid / Offer</text>`;
+    svg += `<text x="${diffRightX}" y="7" text-anchor="end" class="ladder-heading">Diff</text>`;
 
     rows.forEach((row, i) => {
       const t = row.key;
       const y = rowY(i);
       const cy = rowCenterY(i);
 
-      let rowLabel, priceLinePayer, priceLineReceiver,
-        payerIsChainDerived = false, receiverIsChainDerived = false,
-        payerPremLabel, receiverPremLabel, bigFigLabel, rowExtraClass = '', showEditable = true;
-      let payerValForBracket = null, receiverValForBracket = null;
+      let rowLabel, priceLine, isChainDerived = false,
+        premLabel, bigFigLabel, rowExtraClass = '', showEditable = true, spreadLabel = '—';
+      let valForBracket = null;
 
       if (row.kind === 'tenor') {
         const c = curve[t];
         rowLabel = c.label;
-        // Each column shows a real bid/offer PAIR — the best available
-        // bid and the best available offer, independently, same "20/30"
-        // shorthand as any typed rate. Each side is chosen from the same
-        // candidate pool (typed Outright competes on equal footing with
-        // every chain-derived candidate — see computeCandidateBest /
-        // computeSwapBest): highest bid wins, lowest offer wins. Colour
-        // shows the source per number: green = your typed Outright won
-        // that side, yellow = the premium chain created it.
+        // One common bid and one common offer per tenor — the tighter
+        // of whatever the Payer process and the Receiver process each
+        // derived (see computeSwapBest). Colour shows the source per
+        // number: green = your typed Outright won that side, yellow =
+        // the premium chain created it.
         const swapBest = (state.swapBest || {})[t] || {
-          payerBid: { val: c.payerBid, source: null },
-          payerOffer: { val: c.payerOffer, source: null },
-          receiverBid: { val: c.receiverBid, source: null },
-          receiverOffer: { val: c.receiverOffer, source: null },
+          bid: { val: c.payerBid, source: null },
+          offer: { val: c.receiverOffer, source: null },
         };
         row.linkSource = autoLinkSourceFor(t);
 
-        priceLinePayer = buildPairMarkup(swapBest.payerBid, swapBest.payerOffer);
-        priceLineReceiver = buildPairMarkup(swapBest.receiverBid, swapBest.receiverOffer);
+        priceLine = buildPairMarkup(swapBest.bid, swapBest.offer);
+        spreadLabel = fmtSpreadPts(swapBest.bid.val, swapBest.offer.val);
 
-        payerPremLabel = fmtPremiumPtsShort(c.payerPremium);
-        receiverPremLabel = fmtPremiumPtsShort(c.receiverPremium);
-        // Show the whole-number "Big Figure" actually in use for this
-        // tenor — whichever value is available — so it's obvious at a
-        // glance whether the auto-detected/refined figure looks right,
-        // without having to open Rate Entries to check.
-        const bigFigSource = isNum(swapBest.payerBid.val) ? swapBest.payerBid.val
-          : (isNum(swapBest.payerOffer.val) ? swapBest.payerOffer.val
-            : (isNum(swapBest.receiverBid.val) ? swapBest.receiverBid.val : swapBest.receiverOffer.val));
-        bigFigLabel = isNum(bigFigSource) ? `${Math.floor(bigFigSource)}` : '';
+        // "Premium from Spot" and the Big Figure both prefer the bid
+        // side (the primary dealing rate) and fall back to the offer
+        // side when only that's available.
+        const primaryVal = isNum(swapBest.bid.val) ? swapBest.bid.val : swapBest.offer.val;
+        const spotBest = (state.swapBest || {}).spot || {};
+        const spotPrimary = isNum(spotBest.bid && spotBest.bid.val) ? spotBest.bid.val
+          : (spotBest.offer ? spotBest.offer.val : null);
+        premLabel = (isNum(primaryVal) && isNum(spotPrimary)) ? fmtPremiumPtsShort(primaryVal - spotPrimary) : '';
+        bigFigLabel = isNum(primaryVal) ? `${Math.floor(primaryVal)}` : '';
         rowExtraClass = t === 'spot' ? ' ladder-row-spot' : '';
-        payerValForBracket = c.payerBid;
-        receiverValForBracket = c.receiverOffer;
+        valForBracket = primaryVal;
       } else {
         // Odd/Broken Date row — same single-merged-line idea as a
         // standard tenor: a typed Outright on this row always wins;
@@ -927,66 +917,60 @@
         const bd = row.bd;
         rowLabel = row.label;
         const typed = parseRateShorthand(bd.rate, parseFloat(state.bigFigure));
-        const hasTypedPayer = isNum(typed.bid);
-        const hasTypedReceiver = isNum(typed.offer);
+        const hasTypedBid = isNum(typed.bid);
+        const hasTypedOffer = isNum(typed.offer);
         const result = FXCalculator.interpolateBrokenDate(curve, row.date, state.valueDates.spot);
-        const interpPayer = isNum(state.solved.payerSpotBid) && result && isNum(result.payerPremium)
+        const interpBid = isNum(state.solved.payerSpotBid) && result && isNum(result.payerPremium)
           ? state.solved.payerSpotBid + result.payerPremium : null;
-        const interpReceiver = isNum(state.solved.receiverSpotOffer) && result && isNum(result.receiverPremium)
+        const interpOffer = isNum(state.solved.receiverSpotOffer) && result && isNum(result.receiverPremium)
           ? state.solved.receiverSpotOffer + result.receiverPremium : null;
-        const payerUsed = hasTypedPayer ? typed.bid : interpPayer;
-        const receiverUsed = hasTypedReceiver ? typed.offer : interpReceiver;
+        const bidUsed = hasTypedBid ? typed.bid : interpBid;
+        const offerUsed = hasTypedOffer ? typed.offer : interpOffer;
 
-        priceLinePayer = isNum(payerUsed) ? fmtRatePairParts(payerUsed, null)[0] + (hasTypedPayer ? '' : '·i') : '';
-        priceLineReceiver = isNum(receiverUsed) ? fmtRatePairParts(null, receiverUsed)[1] + (hasTypedReceiver ? '' : '·i') : '';
-        payerIsChainDerived = !hasTypedPayer;
-        receiverIsChainDerived = !hasTypedReceiver;
-        payerPremLabel = (isNum(payerUsed) && isNum(state.solved.payerSpotBid)) ? fmtPremiumPtsShort(payerUsed - state.solved.payerSpotBid) : '';
-        receiverPremLabel = (isNum(receiverUsed) && isNum(state.solved.receiverSpotOffer)) ? fmtPremiumPtsShort(receiverUsed - state.solved.receiverSpotOffer) : '';
-        const bigFigSource = isNum(payerUsed) ? payerUsed : receiverUsed;
+        const bidStr = isNum(bidUsed) ? fmtRatePairParts(bidUsed, null)[0] + (hasTypedBid ? '' : '·i') : '';
+        const offerStr = isNum(offerUsed) ? fmtRatePairParts(null, offerUsed)[1] + (hasTypedOffer ? '' : '·i') : '';
+        const bidCls = hasTypedBid ? 'ladder-src-outright' : 'ladder-src-created';
+        const offerCls = hasTypedOffer ? 'ladder-src-outright' : 'ladder-src-created';
+        priceLine = (bidStr || offerStr)
+          ? `<tspan class="${bidCls}">${bidStr}</tspan><tspan class="ladder-val-slash">/</tspan><tspan class="${offerCls}">${offerStr}</tspan>`
+          : '';
+        spreadLabel = fmtSpreadPts(bidUsed, offerUsed);
+        isChainDerived = !hasTypedBid && !hasTypedOffer;
+        const bigFigSource = isNum(bidUsed) ? bidUsed : offerUsed;
+        premLabel = (isNum(bigFigSource) && isNum(state.solved.payerSpotBid)) ? fmtPremiumPtsShort(bigFigSource - state.solved.payerSpotBid) : '';
         bigFigLabel = isNum(bigFigSource) ? `${Math.floor(bigFigSource)}` : 'ODD';
         rowExtraClass = ' ladder-row-broken';
         showEditable = false;
-        payerValForBracket = payerUsed;
-        receiverValForBracket = receiverUsed;
+        valForBracket = bigFigSource;
       }
-      row.payerVal = payerValForBracket;
-      row.receiverVal = receiverValForBracket;
+      row.val = valForBracket;
 
-      const editRects = showEditable ? `
-        <rect x="${payerX + colW - 42}" y="${y}" width="39" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>
-        <rect x="${receiverX + colW - 42}" y="${y}" width="39" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
-      const outerPayerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${payerIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
-      const outerReceiverClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${receiverIsChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
-      // Single line per side: tenor name + Big Figure combined on the
-      // left, price + premium-from-spot combined on the right — cuts
-      // row height roughly in half versus stacking them.
+      const editRect = showEditable ? `
+        <rect x="${tenorX + colW - 94}" y="${y}" width="91" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
+      const outerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${isChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
+      const diffColW = viewW - 4 - (railX + 32);
+      const diffX = railX + 32;
       svg += `
-        <rect x="${payerX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
-        <text x="${payerX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan></text>
-        <text x="${payerX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerPayerClass}" pointer-events="none">${priceLinePayer}<tspan class="ladder-premium-inline"> ${payerPremLabel}</tspan></text>
+        <rect x="${tenorX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
+        <text x="${tenorX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan></text>
+        <text x="${tenorX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerClass}" pointer-events="none">${priceLine}<tspan class="ladder-premium-inline"> ${premLabel}</tspan></text>
+        ${editRect}
 
-        <rect x="${receiverX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
-        <text x="${receiverX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan></text>
-        <text x="${receiverX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerReceiverClass}" pointer-events="none">${priceLineReceiver}<tspan class="ladder-premium-inline"> ${receiverPremLabel}</tspan></text>
-        ${editRects}
+        <rect x="${diffX}" y="${y}" width="${diffColW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
+        <text x="${diffRightX}" y="${cy}" text-anchor="end" dominant-baseline="central" class="ladder-premium">${spreadLabel}</text>
 
-        <line x1="${payerX + colW}" y1="${cy}" x2="${payerRailX}" y2="${cy}" class="ladder-tick"></line>
-        <line x1="${receiverRailX}" y1="${cy}" x2="${receiverX}" y2="${cy}" class="ladder-tick"></line>
+        <line x1="${tenorX + colW}" y1="${cy}" x2="${railX}" y2="${cy}" class="ladder-tick"></line>
       `;
     });
 
-    svg += `<line x1="${payerRailX}" y1="${rowCenterY(0)}" x2="${payerRailX}" y2="${rowCenterY(n - 1)}" class="ladder-rail"></line>`;
-    svg += `<line x1="${receiverRailX}" y1="${rowCenterY(0)}" x2="${receiverRailX}" y2="${rowCenterY(n - 1)}" class="ladder-rail"></line>`;
+    svg += `<line x1="${railX}" y1="${rowCenterY(0)}" x2="${railX}" y2="${rowCenterY(n - 1)}" class="ladder-rail"></line>`;
 
     for (let i = 0; i < n - 1; i++) {
       const a = rows[i];
       const b = rows[i + 1];
       const midY = (rowCenterY(i) + rowCenterY(i + 1)) / 2;
-      const payerPrem = isNum(a.payerVal) && isNum(b.payerVal) ? fmtTrim((b.payerVal - a.payerVal) * 100) : '—';
-      const receiverPrem = isNum(a.receiverVal) && isNum(b.receiverVal) ? fmtTrim((b.receiverVal - a.receiverVal) * 100) : '—';
-      svg += `<text x="${payerRailX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium">${payerPrem}</text>`;
-      svg += `<text x="${receiverRailX - 6}" y="${midY}" text-anchor="end" dominant-baseline="central" class="ladder-premium">${receiverPrem}</text>`;
+      const prem = isNum(a.val) && isNum(b.val) ? fmtTrim((b.val - a.val) * 100) : '—';
+      svg += `<text x="${railX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium">${prem}</text>`;
     }
 
     // Automatic, non-interactive source curves: whenever a tenor's best
@@ -1005,7 +989,7 @@
       const hi = Math.max(sourceIdx, i);
       const y1 = rowCenterY(lo);
       const y2 = rowCenterY(hi);
-      const x = (payerRailX + receiverRailX) / 2;
+      const x = railX;
       const skips = hi - lo > 1;
       const d = skips
         ? `M ${x} ${y1} Q ${x + 16} ${(y1 + y2) / 2} ${x} ${y2}`
@@ -1088,7 +1072,7 @@
   /** Same "which tenor produced the best price" logic as the 🔗 button, reused so editing a rate also reveals where a created price is coming from. */
   function autoLinkSourceFor(tenor) {
     const best = (state.swapBest || {})[tenor] || {};
-    return (best.payerBid && best.payerBid.source) || (best.receiverOffer && best.receiverOffer.source);
+    return (best.bid && best.bid.source) || (best.offer && best.offer.source);
   }
 
   function applyLadderEdit(tenor, raw) {
