@@ -49,12 +49,48 @@ const FXCalculator = (function () {
     '9M': '9 Months', '10M': '10 Months', '11M': '11 Months', '12M': '12 Months',
   };
 
-  /** Build the full value-date ladder from today's trade date. */
+  /**
+   * Build the full value-date ladder from today's trade date.
+   *
+   * Cash (same-day) and Tom (next-day) both need the US side open to be
+   * real settleable USD value dates — not just Sri Lanka. A day that's a
+   * US holiday but otherwise a normal Sri Lankan working day (e.g. Labor
+   * Day, Thanksgiving) isn't "Cash/Tom roll forward to the next day"
+   * like a normal SL holiday/weekend gap would be; there simply ARE no
+   * Cash or Tom value dates today, so both are dropped from the ladder
+   * entirely (`cashHidden: true`, `tomHidden: true`, `cash`/`tom: null`).
+   * Spot and every forward tenor still need a real anchor to build off,
+   * so on that kind of day they're built from the previous day that was
+   * a genuine working day on BOTH sides (`referenceDate`), instead of
+   * from today. A normal working day is unaffected: referenceDate is
+   * just today's Cash date, exactly as before.
+   */
   function buildValueDates(tradeDate) {
     const cal = FXCalendar;
-    const cash = cal.isWorkingDay(tradeDate) ? new Date(tradeDate) : cal.rollFollowing(tradeDate);
-    const tom = cal.addWorkingDays(cash, 1);
-    const spot = cal.addWorkingDays(cash, 2);
+
+    // A "pure" US holiday: Sri Lanka itself is open (not a weekend, not
+    // an SL bank holiday) but the US side isn't — this is the only case
+    // that hides Cash/Tom outright rather than rolling them forward.
+    // When the US holiday coincides with a weekend/SL holiday, that's
+    // just an ordinary non-working day and Cash/Tom roll forward as
+    // they always have.
+    const isPureUSHoliday = cal.isUSHoliday(tradeDate) && !cal.isWeekend(tradeDate) && !cal.isHoliday(tradeDate);
+
+    let cash = null;
+    let tom = null;
+    const cashHidden = isPureUSHoliday;
+    const tomHidden = isPureUSHoliday;
+    let referenceDate;
+
+    if (isPureUSHoliday) {
+      referenceDate = cal.previousWorkingDay(tradeDate);
+    } else {
+      cash = cal.isWorkingDay(tradeDate) ? new Date(tradeDate) : cal.rollFollowing(tradeDate);
+      referenceDate = cash;
+    }
+
+    if (!tomHidden) tom = cal.addWorkingDays(referenceDate, 1);
+    const spot = cal.addWorkingDays(referenceDate, 2);
 
     const dates = { cash, tom, spot };
     dates['1W'] = cal.addTenorWeeks(spot, 1);
@@ -67,11 +103,17 @@ const FXCalculator = (function () {
     const days = {};
     const daysFromCash = {};
     TENOR_ORDER.forEach((t) => {
+      if ((t === 'cash' && cashHidden) || (t === 'tom' && tomHidden)) {
+        // No Cash/Tom value date to measure from/to today.
+        days[t] = null;
+        daysFromCash[t] = null;
+        return;
+      }
       days[t] = cal.calendarDaysBetween(spot, dates[t]); // negative for cash/tom — this is what the swap-point solver and Per Day premiums use throughout, since Spot is the real market anchor for forward points
-      daysFromCash[t] = cal.calendarDaysBetween(cash, dates[t]); // Cash as day 0 — for display (NOD column), matching how a dealer reads "days to settlement" from the trade date itself
+      daysFromCash[t] = cal.calendarDaysBetween(referenceDate, dates[t]); // referenceDate as day 0 — for display (NOD column); equals Cash on a normal day, and the previous fully-open working day when Cash/Tom are hidden
     });
 
-    return { cash, tom, spot, dates, days, daysFromCash };
+    return { cash, tom, spot, dates, days, daysFromCash, cashHidden, tomHidden, referenceDate };
   }
 
   /**
