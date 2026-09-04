@@ -847,9 +847,9 @@
   function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
     const rows = buildDisplayRows();
     const n = rows.length;
-    const rowH = 12;
-    const slot = 14;
-    const topPad = 8;
+    const rowH = 10;
+    const slot = 11.5;
+    const topPad = 7;
     const height = topPad + n * slot + 5;
 
     // One common Bid/Offer column (merging the Payer-process and
@@ -868,6 +868,26 @@
     let svg = `<svg class="ladder-svg" viewBox="0 0 ${viewW} ${height}" width="100%" role="img" aria-label="Rate ladder with bid/offer and spread">`;
     svg += `<text x="${tenorX}" y="7" class="ladder-heading">Bid / Offer</text>`;
     svg += `<text x="${diffRightX}" y="7" text-anchor="end" class="ladder-heading">Diff</text>`;
+
+    // Pre-pass: figure out every row's link source FIRST (before
+    // rendering any row), so a source tenor appearing earlier in the
+    // ladder than the row it feeds can still get the right tag number.
+    const rowKeysAll = rows.map((r) => r.key);
+    rows.forEach((row) => {
+      if (row.kind === 'tenor') row.linkSource = autoLinkSourceFor(row.key);
+    });
+
+    // Assign each SOURCE tenor a small number (1, 2, 3…), in ladder
+    // order — every row it creates a rate for shows that same number
+    // next to its price, and the source row itself shows the number
+    // next to its tenor name, so matching numbers = matching link.
+    const linkTagNumber = {};
+    let nextLinkTag = 1;
+    rows.forEach((row) => {
+      if (row.kind !== 'tenor' || !row.linkSource) return;
+      if (rowKeysAll.indexOf(row.linkSource) === -1 || row.linkSource === row.key) return;
+      if (!linkTagNumber[row.linkSource]) linkTagNumber[row.linkSource] = nextLinkTag++;
+    });
 
     rows.forEach((row, i) => {
       const t = row.key;
@@ -890,7 +910,6 @@
           bid: { val: c.payerBid, source: null },
           offer: { val: c.receiverOffer, source: null },
         };
-        row.linkSource = autoLinkSourceFor(t);
 
         priceLine = buildPairMarkup(swapBest.bid, swapBest.offer);
         spreadLabel = fmtSpreadPts(swapBest.bid.val, swapBest.offer.val);
@@ -945,6 +964,16 @@
       }
       row.val = valForBracket;
 
+      // Matching link tags: if THIS row is a source other rows were
+      // created from, show its identity number next to the tenor name.
+      // If THIS row was itself created from another row, show that
+      // source's number next to the price — same number in both
+      // places = that's the link.
+      const ownTagNum = linkTagNumber[t];
+      const ownTag = ownTagNum ? `<tspan class="ladder-link-tag"> ${ownTagNum}</tspan>` : '';
+      const sourceTagNum = row.linkSource ? linkTagNumber[row.linkSource] : null;
+      const sourceTag = sourceTagNum ? `<tspan class="ladder-link-tag">${sourceTagNum} </tspan>` : '';
+
       const editRect = showEditable ? `
         <rect x="${tenorX + colW - 94}" y="${y}" width="91" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
       const outerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${isChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
@@ -952,8 +981,8 @@
       const diffX = railX + 32;
       svg += `
         <rect x="${tenorX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
-        <text x="${tenorX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan></text>
-        <text x="${tenorX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerClass}" pointer-events="none">${priceLine}<tspan class="ladder-premium-inline"> ${premLabel}</tspan></text>
+        <text x="${tenorX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan>${ownTag}</text>
+        <text x="${tenorX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerClass}" pointer-events="none">${sourceTag}${priceLine}<tspan class="ladder-premium-inline"> ${premLabel}</tspan></text>
         ${editRect}
 
         <rect x="${diffX}" y="${y}" width="${diffColW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
@@ -1111,27 +1140,13 @@
   }
 
   function renderMismatchBanner() {
+    // Mismatch warnings turned off entirely — the underlying detection in
+    // recompute() still runs (harmless, and available again if this is
+    // ever turned back on), but nothing from it is displayed anymore.
     const el = document.getElementById('mismatchBanner');
     if (!el) return;
-    const mismatches = state.mismatches || [];
-    if (!mismatches.length) {
-      el.style.display = 'none';
-      el.innerHTML = '';
-      return;
-    }
-    el.style.display = '';
-    el.innerHTML = mismatches.map((m) => {
-      const sideLabel = m.side === 'payer' ? 'Payer' : 'Receiver';
-      const parts = [];
-      if (m.direct) parts.push(`Δ${fmtTrim(m.actualDisplayPts)}${m.unitLabel || 'p'}`);
-      if (m.toSuitable) parts.push(`${LABELS[m.to]} ${fmtNum(m.suggestedToRate)}`);
-      if (m.fromSuitable) parts.push(`${LABELS[m.from]} ${fmtNum(m.suggestedFromRate)}`);
-      const text = parts.length ? parts.join(' / ') : '—';
-      return `
-      <div class="match-line mismatch-${m.side} mismatch-big">
-        ⚠ ${LABELS[m.from]}→${LABELS[m.to]} ${sideLabel}: ${text}
-      </div>`;
-    }).join('');
+    el.style.display = 'none';
+    el.innerHTML = '';
   }
 
   /* ==================================================================
