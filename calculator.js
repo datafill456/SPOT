@@ -90,7 +90,12 @@ const FXCalculator = (function () {
     let referenceDate;
 
     if (cashHidden) {
-      referenceDate = cal.previousWorkingDay(tradeDate);
+      // No Cash date exists today, but "today" is still today — Tom
+      // should be measured forward from the actual trade date, not from
+      // some earlier already-passed working day. (Walking backward here
+      // was the bug: it could land Tom's candidate slot back on the very
+      // same holiday, wrongly cascading the hide down to Tom too.)
+      referenceDate = new Date(tradeDate);
     } else {
       cash = cal.isWorkingDay(tradeDate) ? new Date(tradeDate) : cal.rollFollowing(tradeDate);
       referenceDate = cash;
