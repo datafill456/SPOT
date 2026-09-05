@@ -85,26 +85,33 @@ const FXCalculator = (function () {
     // have.
     const isPureUSHoliday = (d) => cal.isUSHoliday(d) && !cal.isWeekend(d) && !cal.isHoliday(d);
 
-    let cash = null;
-    const cashHidden = isPureUSHoliday(tradeDate);
-    let referenceDate;
-
-    if (cashHidden) {
-      // No Cash date exists today, but "today" is still today — Tom
-      // should be measured forward from the actual trade date, not from
-      // some earlier already-passed working day. (Walking backward here
-      // was the bug: it could land Tom's candidate slot back on the very
-      // same holiday, wrongly cascading the hide down to Tom too.)
-      referenceDate = new Date(tradeDate);
-    } else {
-      cash = cal.isWorkingDay(tradeDate) ? new Date(tradeDate) : cal.rollFollowing(tradeDate);
-      referenceDate = cash;
+    // Cash's natural slot: the next day Sri Lanka itself would call a
+    // business day, counting from (and including) the trade date itself
+    // — today, if Sri Lanka is open today; otherwise the next day SL
+    // considers open (weekend/SL-holiday skipped). This is Sri Lanka's
+    // own candidate slot, decided BEFORE even asking whether the US is
+    // open that day.
+    let candidateCash = new Date(tradeDate);
+    while (cal.isWeekend(candidateCash) || cal.isHoliday(candidateCash)) {
+      candidateCash = cal.addDays(candidateCash, 1);
     }
+    // candidateCash is already guaranteed SL-open, so a US holiday there
+    // is necessarily a "pure" one — Sri Lanka's bank is open and ready to
+    // settle, but there's no counterpart on the US side that specific
+    // day, so Cash simply has no valid slot there (it does NOT roll
+    // further forward to the next fully-open day — that would silently
+    // substitute a different, later date for what Cash actually means).
+    const cashHidden = cal.isUSHoliday(candidateCash);
+    const cash = cashHidden ? null : candidateCash;
+    // Day-zero reference for the NOD column: Sri Lanka's own candidate
+    // slot, whether or not Cash itself ended up hidden.
+    const referenceDate = candidateCash;
 
-    // The "natural" T+1 slot: the very next day Sri Lanka itself would
-    // call a business day (weekend/SL-holiday skipped), before even
-    // considering whether the US is open that day.
-    let candidateTom = cal.addDays(referenceDate, 1);
+    // Tom's natural slot: the same idea, one Sri-Lanka-business-day
+    // further along from Cash's own candidate slot — independent of
+    // whether Cash itself is hidden, so Tom hiding is never triggered
+    // just because Cash happened to hide first.
+    let candidateTom = cal.addDays(candidateCash, 1);
     while (cal.isWeekend(candidateTom) || cal.isHoliday(candidateTom)) {
       candidateTom = cal.addDays(candidateTom, 1);
     }
@@ -118,10 +125,10 @@ const FXCalculator = (function () {
       // Skips straight past the US-holiday slot to the next day open on
       // both sides — the same date Tom would have landed on under the
       // old roll-forward behavior, now claimed by Spot instead.
-      spot = cal.addWorkingDays(referenceDate, 1);
+      spot = cal.nextWorkingDay(candidateTom);
     } else {
       tom = candidateTom;
-      spot = cal.addWorkingDays(referenceDate, 2);
+      spot = cal.nextWorkingDay(tom);
     }
 
     const dates = { cash, tom, spot };
@@ -142,7 +149,7 @@ const FXCalculator = (function () {
         return;
       }
       days[t] = cal.calendarDaysBetween(spot, dates[t]); // negative for cash/tom — this is what the swap-point solver and Per Day premiums use throughout, since Spot is the real market anchor for forward points
-      daysFromCash[t] = cal.calendarDaysBetween(referenceDate, dates[t]); // referenceDate as day 0 — for display (NOD column); equals Cash on a normal day, and the previous fully-open working day when Cash is hidden
+      daysFromCash[t] = cal.calendarDaysBetween(referenceDate, dates[t]); // referenceDate as day 0 — for display (NOD column); equals Cash's own date on a normal day, and Sri Lanka's candidate slot for that day even when Cash itself is hidden
     });
 
     return { cash, tom, spot, dates, days, daysFromCash, cashHidden, tomHidden, referenceDate };
