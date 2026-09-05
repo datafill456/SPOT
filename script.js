@@ -45,7 +45,6 @@
     valueDateOverrides: {}, // { tenor: 'YYYY-MM-DD' } — manual correction if the computed date is wrong
     valueDates: null,
     solved: null,
-    tenorRelations: [],
     matches: [], // [{ from, to, side }] — typed rate agrees with typed premium
     mismatches: [], // [{ from, to, side, typedPremiumPts, actualDiffPts, offPts, suggestedFromRate, suggestedToRate }]
   };
@@ -273,7 +272,6 @@
     state.anchors = anchors;
     state.anchorByNode = {};
     anchors.forEach((a) => { state.anchorByNode[a.node] = a; });
-    state.tenorRelations = FXCalculator.computeTenorRelations(anchors, state.valueDates.days);
     state.swapBest = computeSwapBest();
 
     // Match detection: a Premium Entry "confirms" against the board when
@@ -587,8 +585,33 @@
     document.getElementById('tradeDateDisplay').textContent = fmtDateLabel(state.tradeDate);
   }
 
-  function populateTenorSelect(sel) {
+  function populateTenorSelect(sel, fallback) {
+    const prev = sel.value;
     sel.innerHTML = visibleTenors().map((t) => `<option value="${t}">${LABELS[t]}</option>`).join('');
+    // Keep whatever was selected if it's still a valid option; otherwise
+    // fall back (e.g. Cash just became hidden — a US holiday today — so
+    // any dropdown that had "Cash" picked needs a sane replacement
+    // instead of silently keeping an option that no longer exists).
+    if (visibleTenors().includes(prev)) {
+      sel.value = prev;
+    } else if (fallback) {
+      sel.value = fallback;
+    }
+  }
+
+  /** Every tenor-picking <select> that needs to stay in sync with Cash/Tom's hidden status — re-populated on every recompute, not just once at page load, so a value date newly hidden by a US holiday disappears everywhere immediately, not only from the ladder. */
+  function refreshTenorSelects() {
+    const nearFallback = isCashHidden() ? (isTomHidden() ? 'spot' : 'tom') : 'cash';
+    const newRateNode = document.getElementById('newRateNode');
+    if (newRateNode) populateTenorSelect(newRateNode, 'spot');
+    const newPremiumFrom = document.getElementById('newPremiumFrom');
+    const newPremiumTo = document.getElementById('newPremiumTo');
+    if (newPremiumFrom) populateTenorSelect(newPremiumFrom, nearFallback);
+    if (newPremiumTo) populateTenorSelect(newPremiumTo, 'spot');
+    const bulkPremiumFrom = document.getElementById('bulkPremiumFrom');
+    const bulkPremiumTo = document.getElementById('bulkPremiumTo');
+    if (bulkPremiumFrom) populateTenorSelect(bulkPremiumFrom, nearFallback);
+    if (bulkPremiumTo) populateTenorSelect(bulkPremiumTo);
   }
 
   /* ==================================================================
@@ -833,8 +856,20 @@
     const bidStr = isNum(bidCand && bidCand.val) ? fmtRatePairParts(bidCand.val, null)[0] : '';
     const offerStr = isNum(offerCand && offerCand.val) ? fmtRatePairParts(null, offerCand.val)[1] : '';
     if (!bidStr && !offerStr) return '';
-    const bidClass = bidCand && bidCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
-    const offerClass = offerCand && offerCand.source === 'outright' ? 'ladder-src-outright' : 'ladder-src-created';
+    // A created value is colored by WHICH PROCESS built it — Payer or
+    // Receiver — instead of one uniform yellow for every created price.
+    // Falls back to the neutral "created" color if a candidate has no
+    // process info (shouldn't normally happen for a chain-derived value).
+    const classFor = (cand) => {
+      if (!cand || cand.source !== 'outright') {
+        if (cand && cand.process === 'receiver') return 'ladder-src-created-receiver';
+        if (cand && cand.process === 'payer') return 'ladder-src-created-payer';
+        return 'ladder-src-created';
+      }
+      return 'ladder-src-outright';
+    };
+    const bidClass = classFor(bidCand);
+    const offerClass = classFor(offerCand);
     return `${bidTagMarkup}<tspan class="${bidClass}">${bidStr}</tspan><tspan class="ladder-val-slash">/</tspan>${offerTagMarkup}<tspan class="${offerClass}">${offerStr}</tspan>`;
   }
 
@@ -1276,11 +1311,10 @@
   function renderValueDates() {
     const tbody = document.getElementById('valueDateTableBody');
     if (!tbody) return;
-    tbody.innerHTML = TENORS.map((t) => {
+    tbody.innerHTML = visibleTenors().map((t) => {
       const d = state.valueDates.dates[t];
       const nod = NEAR_DATES.includes(t) || t === 'spot' ? state.valueDates.daysFromCash[t] : state.valueDates.days[t];
-      const dateCell = d ? fmtDateLabel(d)
-        : ((t === 'cash' && isCashHidden()) || (t === 'tom' && isTomHidden()) ? 'Hidden — US holiday' : '—');
+      const dateCell = d ? fmtDateLabel(d) : '—';
       return `
         <tr>
           <td class="tenor-name">${LABELS[t]}</td>
@@ -1312,35 +1346,6 @@
   }
 
   /* ==================================================================
-     RENDER: Implied Premiums (from 2+ direct rates)
-     ================================================================== */
-  function renderImpliedPremiums() {
-    const card = document.getElementById('impliedCard');
-    const tbody = document.getElementById('impliedTableBody');
-    const relations = state.tenorRelations;
-    if (!relations.length) {
-      card.style.display = 'none';
-      return;
-    }
-    card.style.display = '';
-    tbody.innerHTML = relations.map((ip) => {
-      const payerPts = isNum(ip.payerPremium) ? ip.payerPremium * 100 : null;
-      const receiverPts = isNum(ip.receiverPremium) ? ip.receiverPremium * 100 : null;
-      const payerPerDay = isNum(ip.payerPremiumPerDay) ? ip.payerPremiumPerDay * 100 : null;
-      const receiverPerDay = isNum(ip.receiverPremiumPerDay) ? ip.receiverPremiumPerDay * 100 : null;
-      return `
-      <tr>
-        <td class="tenor-name">${LABELS[ip.from]} → ${LABELS[ip.to]}</td>
-        <td class="mono val-bid">${payerPts !== null ? fmtSigned(payerPts) : '—'}</td>
-        <td class="mono val-bid">${payerPerDay !== null ? fmtSigned(payerPerDay) : '—'}</td>
-        <td class="mono val-offer">${receiverPts !== null ? fmtSigned(receiverPts) : '—'}</td>
-        <td class="mono val-offer">${receiverPerDay !== null ? fmtSigned(receiverPerDay) : '—'}</td>
-      </tr>
-    `;
-    }).join('');
-  }
-
-  /* ==================================================================
      Theme
      ================================================================== */
   function applyTheme(theme) {
@@ -1355,9 +1360,9 @@
   function renderDownstream() {
     renderQuoteScreen();
     renderSolverStatus();
-    renderImpliedPremiums();
     renderBrokenDates();
     renderValueDates();
+    refreshTenorSelects();
   }
 
   /* ==================================================================
