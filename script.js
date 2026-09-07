@@ -184,6 +184,7 @@
     if (!perDay) return scaled;
     const fromDate = state.valueDates.dates[fromNode];
     const toDate = state.valueDates.dates[toNode];
+    if (!fromDate || !toDate) return null; // one side is a tenor hidden today (e.g. Cash/Tom on a US holiday) — no real date to measure days against
     const days = FXCalendar.calendarDaysBetween(fromDate, toDate);
     return scaled * days;
   }
@@ -191,6 +192,15 @@
   /* ---------------- Solve ---------------- */
   function recompute() {
     state.valueDates = FXCalculator.buildValueDates(state.tradeDate);
+
+    // Drop any Rate/Premium entries left over from a stale saved draft that
+    // reference a tenor hidden today (e.g. Cash or Tom sitting on a
+    // US-only holiday). A hidden tenor has no value date to compute
+    // against, so an entry pointing at it can't mean anything today — this
+    // also protects against the very case that used to crash recompute().
+    const hasValueDate = (t) => !!state.valueDates.dates[t];
+    state.rateEntries = state.rateEntries.filter((re) => hasValueDate(re.node));
+    state.premiumEntries = state.premiumEntries.filter((pe) => hasValueDate(pe.from) && hasValueDate(pe.to));
 
     // Manual correction for any tenor whose computed date is wrong (a
     // missing holiday, an edge case in the roll convention, etc.) —
@@ -291,6 +301,7 @@
 
       const fromDate = state.valueDates.dates[pe.from];
       const toDate = state.valueDates.dates[pe.to];
+      if (!fromDate || !toDate) return; // shouldn't happen after the sanitize step above, but never compute days against a hidden tenor
       const days = FXCalendar.calendarDaysBetween(fromDate, toDate);
       // If Per Day is ticked, "the premium" the dealer typed is points-PER-DAY,
       // not the flat total — suggestions must be converted back to that same
