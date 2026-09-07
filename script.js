@@ -592,6 +592,12 @@
     return [full(bid), full(offer)];
   }
 
+  /** Just the last two digits past the decimal point, e.g. 336.45 -> "45" — used only for the small created>outright comparison tag, never for a rate shown on its own. */
+  function fmtPipsOnly(v) {
+    const p = Math.round((Math.abs(v) % 1) * 100);
+    return String(p).padStart(2, '0');
+  }
+
   function renderHeader() {
     document.getElementById('tradeDateDisplay').textContent = fmtDateLabel(state.tradeDate);
   }
@@ -863,7 +869,7 @@
    * won that side, yellow if a chain-computed price won it — so one
    * pair can legitimately show one green number next to one yellow one.
    */
-  function buildPairMarkup(bidCand, offerCand, bidTagMarkup = '', offerTagMarkup = '') {
+  function buildPairMarkup(bidCand, offerCand, bidTagMarkup = '', offerTagMarkup = '', bidCompareMarkup = '', offerCompareMarkup = '') {
     const bidStr = isNum(bidCand && bidCand.val) ? fmtRatePairParts(bidCand.val, null)[0] : '';
     const offerStr = isNum(offerCand && offerCand.val) ? fmtRatePairParts(null, offerCand.val)[1] : '';
     if (!bidStr && !offerStr) return '';
@@ -881,7 +887,7 @@
     };
     const bidClass = classFor(bidCand);
     const offerClass = classFor(offerCand);
-    return `${bidTagMarkup}<tspan class="${bidClass}">${bidStr}</tspan><tspan class="ladder-val-slash">/</tspan>${offerTagMarkup}<tspan class="${offerClass}">${offerStr}</tspan>`;
+    return `${bidTagMarkup}<tspan class="${bidClass}">${bidStr}</tspan>${bidCompareMarkup}<tspan class="ladder-val-slash">/</tspan>${offerTagMarkup}<tspan class="${offerClass}">${offerStr}</tspan>${offerCompareMarkup}`;
   }
 
   /** Bid-offer spread at one tenor, in points, e.g. "12.5" or "—" if either side is missing. */
@@ -986,7 +992,23 @@
         const bidTagMarkup = tagMarkup(row.bidLink);
         const offerTagMarkup = tagMarkup(row.offerLink);
 
-        priceLine = buildPairMarkup(swapBest.bid, swapBest.offer, bidTagMarkup, offerTagMarkup);
+        // When a chain-created price WINS a side over this tenor's own
+        // directly-typed Outright (rather than the outright simply not
+        // existing at all), show a small "created>outright" pips-only
+        // comparison right next to it — e.g. "45>35" — so the dealer can
+        // see at a glance that a better price was created and by how
+        // much, without the outright rate being displayed at full length.
+        const anchor = anchorByNode ? anchorByNode[t] : null;
+        const compareTag = (cand, side) => {
+          if (!cand || !isNum(cand.val) || cand.source === 'outright') return '';
+          const outrightVal = anchor && isNum(anchor[side]) ? anchor[side] : null;
+          if (outrightVal === null || roundsToSame(cand.val, outrightVal)) return '';
+          return `<tspan class="ladder-compare-inline"> ${fmtPipsOnly(cand.val)}&gt;${fmtPipsOnly(outrightVal)}</tspan>`;
+        };
+        const bidCompareMarkup = compareTag(swapBest.bid, 'bid');
+        const offerCompareMarkup = compareTag(swapBest.offer, 'offer');
+
+        priceLine = buildPairMarkup(swapBest.bid, swapBest.offer, bidTagMarkup, offerTagMarkup, bidCompareMarkup, offerCompareMarkup);
         spreadLabel = fmtSpreadPts(swapBest.bid.val, swapBest.offer.val);
 
         // "Premium from Spot" and the Big Figure both prefer the bid
@@ -1071,7 +1093,12 @@
       const b = rows[i + 1];
       const midY = (rowCenterY(i) + rowCenterY(i + 1)) / 2;
       const prem = isNum(a.val) && isNum(b.val) ? fmtTrim((b.val - a.val) * 100) : '—';
-      svg += `<text x="${railX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium">${prem}</text>`;
+      // Only offer click-to-edit between two real tenors (not a broken/odd
+      // date row, which isn't part of the premium graph and has no from/to
+      // Tenor pair to attach an entry to).
+      const editablePremRect = (a.kind === 'tenor' && b.kind === 'tenor') ? `
+        <rect x="${railX}" y="${midY - rowH / 2}" width="${diffRightX - railX}" height="${rowH}" fill="transparent" class="ladder-prem-editable" style="cursor:pointer;" data-from="${a.key}" data-to="${b.key}"></rect>` : '';
+      svg += `<text x="${railX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium" pointer-events="none">${prem}</text>${editablePremRect}`;
     }
 
     // Automatic, non-interactive source curves: whenever a tenor's best
@@ -1127,6 +1154,10 @@
     wrap.querySelectorAll('.ladder-val-editable').forEach((el) => {
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => openLadderEditor(el, wrap));
+    });
+    wrap.querySelectorAll('.ladder-prem-editable').forEach((el) => {
+      el.style.cursor = 'pointer';
+      el.addEventListener('click', () => openLadderPremiumEditor(el, wrap));
     });
   }
 
@@ -1197,6 +1228,78 @@
     }
     recompute();
     renderRateTable();
+    renderDownstream();
+    scheduleSaveDraft();
+  }
+
+  /**
+   * Same click-to-edit idea as a Rate cell, but for the Premium shown
+   * between two adjacent tenor rows in the ladder — typing here creates
+   * or updates the matching Premium Entry directly, exactly as if it had
+   * been added through the Premium Entries table.
+   */
+  function openLadderPremiumEditor(targetEl, wrap) {
+    if (wrap.querySelector('.ladder-edit-input')) return; // one editor at a time
+    const fromNode = targetEl.dataset.from;
+    const toNode = targetEl.dataset.to;
+    const rect = targetEl.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+
+    // Edits an existing Premium Entry between these two exact tenors (in
+    // either direction it was originally entered) if one exists, otherwise
+    // creates a new one going from the earlier tenor to the later one —
+    // the same direction the ladder itself displays the premium in.
+    const entry = state.premiumEntries.find(
+      (pe) => (pe.from === fromNode && pe.to === toNode) || (pe.from === toNode && pe.to === fromNode)
+    );
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'cell-input ladder-edit-input';
+    input.placeholder = '5/5.5';
+    input.value = entry ? entry.premium : '';
+    input.style.position = 'absolute';
+    input.style.left = `${rect.left - wrapRect.left - 20}px`;
+    input.style.top = `${rect.top - wrapRect.top - 4}px`;
+    input.style.width = '90px';
+    input.style.zIndex = '5';
+
+    wrap.appendChild(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    function commit() {
+      if (done) return;
+      done = true;
+      const raw = input.value.trim();
+      input.remove();
+      applyLadderPremiumEdit(entry, fromNode, toNode, raw);
+    }
+    function cancel() {
+      if (done) return;
+      done = true;
+      input.remove();
+    }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') commit();
+      if (e.key === 'Escape') cancel();
+    });
+    input.addEventListener('blur', commit);
+  }
+
+  function applyLadderPremiumEdit(existingEntry, fromNode, toNode, raw) {
+    if (!raw) {
+      // Cleared entirely — remove the Premium Entry (whichever direction
+      // it was originally stored in) so this link drops out of the graph.
+      if (existingEntry) state.premiumEntries = state.premiumEntries.filter((pe) => pe.id !== existingEntry.id);
+    } else if (existingEntry) {
+      existingEntry.premium = raw; // keep its existing direction and Per Day flag, just update the value
+    } else {
+      state.premiumEntries.push({ id: nextPremiumId++, from: fromNode, to: toNode, premium: raw, perDay: false });
+    }
+    recompute();
+    renderPremiumTable();
     renderDownstream();
     scheduleSaveDraft();
   }
