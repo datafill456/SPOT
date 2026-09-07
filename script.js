@@ -108,6 +108,34 @@
     return isNum(a) && isNum(b) && a.toFixed(dp) === b.toFixed(dp);
   }
 
+  /**
+   * Resolves a graph node's value date whether it's a standard tenor
+   * (looked up in state.valueDates.dates as always) or an Odd/Broken
+   * Date, referenced as "bd:<id>" once it's been picked in a Premium
+   * Entry dropdown — those live in state.brokenDates instead, keyed by
+   * their own id rather than a fixed tenor slot.
+   */
+  function nodeDate(node) {
+    if (state.valueDates.dates[node]) return state.valueDates.dates[node];
+    if (typeof node === 'string' && node.indexOf('bd:') === 0) {
+      const id = Number(node.slice(3));
+      const bd = (state.brokenDates || []).find((b) => b.id === id);
+      return bd ? FXCalendar.parse(bd.dateStr) : null;
+    }
+    return null;
+  }
+
+  /** Same idea as nodeDate, but for the human-readable label shown in tables/dropdowns instead of the raw "bd:<id>" key. */
+  function nodeLabel(node) {
+    if (LABELS[node]) return LABELS[node];
+    if (typeof node === 'string' && node.indexOf('bd:') === 0) {
+      const id = Number(node.slice(3));
+      const bd = (state.brokenDates || []).find((b) => b.id === id);
+      return bd ? `Odd ${isoToDisplayDate(bd.dateStr)}` : 'Odd Date';
+    }
+    return node;
+  }
+
   /* ---------------- Shorthand parsing ---------------- */
 
   /** "30/40" + bigFigure "336" -> {bid:336.30, offer:336.40}, with big-figure rollover
@@ -182,8 +210,8 @@
     if (rawVal === null) return null;
     const scaled = rawVal / 100; // premium is always points, e.g. 5 -> 0.05
     if (!perDay) return scaled;
-    const fromDate = state.valueDates.dates[fromNode];
-    const toDate = state.valueDates.dates[toNode];
+    const fromDate = nodeDate(fromNode);
+    const toDate = nodeDate(toNode);
     if (!fromDate || !toDate) return null; // one side is a tenor hidden today (e.g. Cash/Tom on a US holiday) — no real date to measure days against
     const days = FXCalendar.calendarDaysBetween(fromDate, toDate);
     return scaled * days;
@@ -198,7 +226,10 @@
     // US-only holiday). A hidden tenor has no value date to compute
     // against, so an entry pointing at it can't mean anything today — this
     // also protects against the very case that used to crash recompute().
-    const hasValueDate = (t) => !!state.valueDates.dates[t];
+    // (nodeDate also resolves Odd/Broken Date "bd:<id>" references, so a
+    // Premium Entry pointing at one only survives while that date still
+    // exists — removed automatically the moment its Odd Date row is deleted.)
+    const hasValueDate = (t) => !!nodeDate(t);
     state.rateEntries = state.rateEntries.filter((re) => hasValueDate(re.node));
     state.premiumEntries = state.premiumEntries.filter((pe) => hasValueDate(pe.from) && hasValueDate(pe.to));
 
@@ -272,7 +303,26 @@
       return { node: g.node, rateStr: g.rateStr, bid: r.bid, offer: r.offer };
     }).filter((g) => g.bid !== null || g.offer !== null);
 
-    state.solved = FXCalculator.solveMarket(edges, anchors, state.valueDates);
+    // Odd/Broken Dates join the same premium graph as a plain extra node,
+    // referenced as "bd:<id>" — so a Premium Entry can connect one to any
+    // standard tenor (or another Odd Date) exactly like two tenors would
+    // connect to each other. A typed Rate on the broken date itself (its
+    // own dedicated Rate field, same Big Figure convention as any other
+    // Rate Entry) becomes a real anchor for that node too, so it can also
+    // help CREATE prices for other tenors, not just receive one.
+    const extraNodes = (state.brokenDates || []).map((bd) => ({
+      key: `bd:${bd.id}`,
+      date: FXCalendar.parse(bd.dateStr),
+      label: `Odd ${isoToDisplayDate(bd.dateStr)}`,
+    }));
+    const brokenAnchors = (state.brokenDates || [])
+      .map((bd) => {
+        const typed = parseRateShorthand(bd.rate, baseBF);
+        return { node: `bd:${bd.id}`, bid: typed.bid, offer: typed.offer };
+      })
+      .filter((a) => a.bid !== null || a.offer !== null);
+
+    state.solved = FXCalculator.solveMarket(edges, anchors.concat(brokenAnchors), state.valueDates, extraNodes);
     // The solver only keeps ONE anchor per connected component (whichever
     // came first), so a tenor with its OWN directly-typed rate can still
     // get silently overridden by a value derived from a different
@@ -299,8 +349,8 @@
       const toAnchor = anchors.find((a) => a.node === pe.to);
       if (!fromAnchor || !toAnchor) return;
 
-      const fromDate = state.valueDates.dates[pe.from];
-      const toDate = state.valueDates.dates[pe.to];
+      const fromDate = nodeDate(pe.from);
+      const toDate = nodeDate(pe.to);
       if (!fromDate || !toDate) return; // shouldn't happen after the sanitize step above, but never compute days against a hidden tenor
       const days = FXCalendar.calendarDaysBetween(fromDate, toDate);
       // If Per Day is ticked, "the premium" the dealer typed is points-PER-DAY,
@@ -479,8 +529,11 @@
 
     // One pass can only propagate one hop further than the previous
     // pass knew about, so repeat enough times for the longest possible
-    // chain (bounded by the number of tenors) to fully settle.
+    // chain (bounded by the number of tenors) to fully settle. The very
+    // last pass's full candidate pool (before picking a winner) is kept
+    // around afterwards — see below.
     const maxIterations = TENORS.length;
+    let lastPools = null;
     for (let iter = 0; iter < maxIterations; iter++) {
       const pools = {};
       TENORS.forEach((t) => {
@@ -491,6 +544,12 @@
       });
 
       state.premiumEntries.forEach((pe) => {
+        // This propagation is purely for the ladder's standard-tenor rows
+        // (Odd/Broken Dates render their own price separately in
+        // renderBrokenDates) — skip any Premium Entry touching one so
+        // `pools`/`current`, which are only keyed by TENORS, are never
+        // indexed with a "bd:<id>" key.
+        if (!TENORS.includes(pe.from) || !TENORS.includes(pe.to)) return;
         const prem = parsePremiumShorthand(pe.premium);
         const payerEdge = premiumToEdgeValue(pe.from, pe.to, prem.payer, pe.perDay);
         const receiverEdge = premiumToEdgeValue(pe.from, pe.to, prem.receiver, pe.perDay);
@@ -517,6 +576,7 @@
         }
       });
 
+      lastPools = pools;
       const next = {};
       TENORS.forEach((t) => {
         next[t] = {
@@ -526,6 +586,25 @@
       });
       current = next;
     }
+
+    // "Created only": the best candidate for this exact slot EXCLUDING
+    // this tenor's own directly-typed Outright specifically (a candidate
+    // that started life as a DIFFERENT tenor's Outright, then arrived
+    // here via the premium chain, still counts as "created" here, same
+    // as everywhere else on the ladder — only a slot's OWN outright is
+    // excluded). By the final pass, each node's pool already holds
+    // exactly two kinds of thing: its own outright (if any) carried
+    // forward, and whatever the chain currently derives fresh from its
+    // neighbors — so filtering out "source === 'outright'" here is all
+    // that's needed. This is what lets the ladder show the created price
+    // small even on a tenor where the Outright is the one actually
+    // winning and being displayed at full size.
+    TENORS.forEach((t) => {
+      const bidCreated = lastPools ? lastPools[t].bid.filter((c) => c.source !== 'outright') : [];
+      const offerCreated = lastPools ? lastPools[t].offer.filter((c) => c.source !== 'outright') : [];
+      current[t].bidCreatedOnly = pickBest(bidCreated, true);
+      current[t].offerCreatedOnly = pickBest(offerCreated, false);
+    });
 
     return current;
   }
@@ -616,6 +695,30 @@
     }
   }
 
+  /**
+   * Same idea as populateTenorSelect, but for the two Premium Entries
+   * dropdowns (and their Bulk equivalents) — these also offer every
+   * current Odd/Broken Date as a pickable Tenor 1 / Tenor 2, listed after
+   * the standard tenors, so a premium can be typed directly against an
+   * odd date exactly like it can between two ordinary tenors. Rate
+   * Entries' own dropdown deliberately does NOT use this — an odd date
+   * already has its own dedicated Rate field in the Odd/Broken Date
+   * table, so it has no reason to also appear there.
+   */
+  function populatePremiumSelect(sel, fallback) {
+    const prev = sel.value;
+    const brokenDatesSorted = (state.brokenDates || []).slice().sort((a, b) => (a.dateStr < b.dateStr ? -1 : 1));
+    const tenorOptions = visibleTenors().map((t) => `<option value="${t}">${LABELS[t]}</option>`);
+    const brokenOptions = brokenDatesSorted.map((bd) => `<option value="bd:${bd.id}">${nodeLabel(`bd:${bd.id}`)}</option>`);
+    sel.innerHTML = tenorOptions.concat(brokenOptions).join('');
+    const validValues = visibleTenors().concat(brokenDatesSorted.map((bd) => `bd:${bd.id}`));
+    if (validValues.includes(prev)) {
+      sel.value = prev;
+    } else if (fallback) {
+      sel.value = fallback;
+    }
+  }
+
   /** Every tenor-picking <select> that needs to stay in sync with Cash/Tom's hidden status — re-populated on every recompute, not just once at page load, so a value date newly hidden by a US holiday disappears everywhere immediately, not only from the ladder. */
   function refreshTenorSelects() {
     const nearFallback = isCashHidden() ? (isTomHidden() ? 'spot' : 'tom') : 'cash';
@@ -623,12 +726,12 @@
     if (newRateNode) populateTenorSelect(newRateNode, 'spot');
     const newPremiumFrom = document.getElementById('newPremiumFrom');
     const newPremiumTo = document.getElementById('newPremiumTo');
-    if (newPremiumFrom) populateTenorSelect(newPremiumFrom, nearFallback);
-    if (newPremiumTo) populateTenorSelect(newPremiumTo, 'spot');
+    if (newPremiumFrom) populatePremiumSelect(newPremiumFrom, nearFallback);
+    if (newPremiumTo) populatePremiumSelect(newPremiumTo, 'spot');
     const bulkPremiumFrom = document.getElementById('bulkPremiumFrom');
     const bulkPremiumTo = document.getElementById('bulkPremiumTo');
-    if (bulkPremiumFrom) populateTenorSelect(bulkPremiumFrom, nearFallback);
-    if (bulkPremiumTo) populateTenorSelect(bulkPremiumTo);
+    if (bulkPremiumFrom) populatePremiumSelect(bulkPremiumFrom, nearFallback);
+    if (bulkPremiumTo) populatePremiumSelect(bulkPremiumTo);
   }
 
   /* ==================================================================
@@ -694,8 +797,8 @@
     state.premiumEntries.forEach((pe) => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td class="tenor-name">${LABELS[pe.from]}</td>
-        <td class="tenor-name">${LABELS[pe.to]}</td>
+        <td class="tenor-name">${nodeLabel(pe.from)}</td>
+        <td class="tenor-name">${nodeLabel(pe.to)}</td>
         <td><input type="text" class="cell-input shorthand" data-id="${pe.id}" data-kind="premium" placeholder="e.g. 5/5.5"></td>
         <td><input type="checkbox" data-id="${pe.id}" data-kind="perday"></td>
         <td><button class="btn danger" data-remove-premium="${pe.id}" style="padding:3px 8px;">✕</button></td>
@@ -992,21 +1095,36 @@
         const bidTagMarkup = tagMarkup(row.bidLink);
         const offerTagMarkup = tagMarkup(row.offerLink);
 
-        // When a chain-created price WINS a side over this tenor's own
-        // directly-typed Outright (rather than the outright simply not
-        // existing at all), show a small "created>outright" pips-only
-        // comparison right next to it — e.g. "45>35" — so the dealer can
-        // see at a glance that a better price was created and by how
-        // much, without the outright rate being displayed at full length.
+        // Whichever price is currently winning this side (Outright or
+        // created) gets shown at full size as always — but if a genuine
+        // competing number also exists on the OTHER side, show that one
+        // small right next to it, colored to match its own source, so
+        // the dealer always sees both without either cluttering the
+        // main display:
+        //  - Outright winning, a created price also exists  -> show the
+        //    created price small, colored by which process built it
+        //    (blue = payer, red = receiver, amber = generic).
+        //  - Created price winning, an Outright also exists  -> show the
+        //    Outright small, in the same green used for a winning
+        //    Outright elsewhere on the ladder.
+        // Nothing shown at all if there's no real competitor, or the two
+        // already round to the same number.
         const anchor = anchorByNode ? anchorByNode[t] : null;
-        const compareTag = (cand, side) => {
-          if (!cand || !isNum(cand.val) || cand.source === 'outright') return '';
+        const compareTag = (cand, side, createdOnlyCand) => {
+          if (!cand || !isNum(cand.val)) return '';
+          if (cand.source === 'outright') {
+            if (!createdOnlyCand || !isNum(createdOnlyCand.val) || roundsToSame(cand.val, createdOnlyCand.val)) return '';
+            const cls = createdOnlyCand.process === 'receiver' ? 'ladder-compare-receiver'
+              : createdOnlyCand.process === 'payer' ? 'ladder-compare-payer'
+              : 'ladder-compare-inline';
+            return `<tspan class="${cls}"> ${fmtPipsOnly(createdOnlyCand.val)}</tspan>`;
+          }
           const outrightVal = anchor && isNum(anchor[side]) ? anchor[side] : null;
           if (outrightVal === null || roundsToSame(cand.val, outrightVal)) return '';
-          return `<tspan class="ladder-compare-inline"> ${fmtPipsOnly(cand.val)}&gt;${fmtPipsOnly(outrightVal)}</tspan>`;
+          return `<tspan class="ladder-compare-outright"> ${fmtPipsOnly(outrightVal)}</tspan>`;
         };
-        const bidCompareMarkup = compareTag(swapBest.bid, 'bid');
-        const offerCompareMarkup = compareTag(swapBest.offer, 'offer');
+        const bidCompareMarkup = compareTag(swapBest.bid, 'bid', swapBest.bidCreatedOnly);
+        const offerCompareMarkup = compareTag(swapBest.offer, 'offer', swapBest.offerCreatedOnly);
 
         priceLine = buildPairMarkup(swapBest.bid, swapBest.offer, bidTagMarkup, offerTagMarkup, bidCompareMarkup, offerCompareMarkup);
         spreadLabel = fmtSpreadPts(swapBest.bid.val, swapBest.offer.val);
@@ -1350,18 +1468,25 @@
         const rateInputCell = `<td><input type="text" class="cell-input shorthand" style="width:90px;" placeholder="typed rate" data-broken-rate-id="${bd.id}" value="${bd.rate || ''}"></td>`;
 
         // A typed Rate on a broken date is a real Outright, just like a
-        // typed Rate Entry — it always wins over the auto-interpolated
-        // figure. No Rate typed yet? Fall back to interpolation as before.
+        // typed Rate Entry — it always wins over anything derived. Next
+        // best: a value the premium graph itself derived because this
+        // exact date was connected via a Premium Entry (a dealer-specified
+        // relationship, not a guess) — labeled "(chain)". Falls back to
+        // the generic piecewise interpolation across the solved curve
+        // only when neither of those exists — labeled "(interp)".
         const typedBF = parseFloat(state.bigFigure);
         const typed = parseRateShorthand(bd.rate, typedBF);
         const hasTypedPayer = isNum(typed.bid);
         const hasTypedReceiver = isNum(typed.offer);
+        const chainNode = state.solved.curve[`bd:${bd.id}`];
+        const chainPayer = chainNode && isNum(chainNode.payerBid) ? chainNode.payerBid : null;
+        const chainReceiver = chainNode && isNum(chainNode.receiverOffer) ? chainNode.receiverOffer : null;
 
-        if (!result && !hasTypedPayer && !hasTypedReceiver) {
+        if (!result && !hasTypedPayer && !hasTypedReceiver && chainPayer === null && chainReceiver === null) {
           tr.innerHTML = `
             ${dateInputCell}
             ${rateInputCell}
-            <td colspan="3" class="val-muted">Need at least 2 solved tenors to interpolate, or type a Rate</td>
+            <td colspan="3" class="val-muted">Need at least 2 solved tenors to interpolate, a Premium Entry connecting this date, or type a Rate</td>
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
         } else {
@@ -1369,20 +1494,23 @@
             ? state.solved.payerSpotBid + result.payerPremium : null;
           const interpReceiver = isNum(state.solved.receiverSpotOffer) && result && isNum(result.receiverPremium)
             ? state.solved.receiverSpotOffer + result.receiverPremium : null;
-          const payerRate = hasTypedPayer ? typed.bid : interpPayer;
-          const receiverRate = hasTypedReceiver ? typed.offer : interpReceiver;
+          const payerRate = hasTypedPayer ? typed.bid : (chainPayer !== null ? chainPayer : interpPayer);
+          const receiverRate = hasTypedReceiver ? typed.offer : (chainReceiver !== null ? chainReceiver : interpReceiver);
+          const payerTag = hasTypedPayer ? '' : (chainPayer !== null ? ' (chain)' : ' (interp)');
+          const receiverTag = hasTypedReceiver ? '' : (chainReceiver !== null ? ' (chain)' : ' (interp)');
           const daysLabel = result ? result.days : FXCalendar.calendarDaysBetween(state.valueDates.spot, targetDate);
           tr.innerHTML = `
             ${dateInputCell}
             ${rateInputCell}
             <td class="mono">${daysLabel}</td>
-            <td class="mono ${hasTypedPayer ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(payerRate)}${hasTypedPayer ? '' : ' (interp)'}</td>
-            <td class="mono ${hasTypedReceiver ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(receiverRate)}${hasTypedReceiver ? '' : ' (interp)'}</td>
+            <td class="mono ${hasTypedPayer ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(payerRate)}${payerTag}</td>
+            <td class="mono ${hasTypedReceiver ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(receiverRate)}${receiverTag}</td>
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
         }
         tbody.appendChild(tr);
       });
+
 
     tbody.querySelectorAll('[data-broken-date-id]').forEach((input) => {
       input.addEventListener('change', () => {
@@ -1391,8 +1519,9 @@
         const iso = parseFlexibleDateToISO(input.value);
         if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); renderBrokenDates(); return; }
         entry.dateStr = iso;
-        renderBrokenDates();
-        renderQuoteScreen();
+        recompute();
+        renderPremiumTable();
+        renderDownstream();
         scheduleSaveDraft();
       });
     });
@@ -1402,17 +1531,23 @@
         const entry = state.brokenDates.find((e) => e.id === Number(input.dataset.brokenRateId));
         if (!entry) return;
         entry.rate = input.value;
-        renderBrokenDates();
-        renderQuoteScreen();
+        recompute();
+        renderPremiumTable();
+        renderDownstream();
         scheduleSaveDraft();
       });
     });
 
     tbody.querySelectorAll('[data-remove-broken]').forEach((btn) => {
       btn.addEventListener('click', () => {
+        // Removing an Odd Date also drops it out of the graph entirely —
+        // recompute()'s own sanitize step then automatically clears any
+        // Premium Entry that had been connected to it, so nothing stale
+        // is left pointing at a date that no longer exists.
         state.brokenDates = state.brokenDates.filter((e) => e.id !== Number(btn.dataset.removeBroken));
-        renderBrokenDates();
-        renderQuoteScreen();
+        recompute();
+        renderPremiumTable();
+        renderDownstream();
         scheduleSaveDraft();
       });
     });
@@ -1507,8 +1642,8 @@
       if (inputs.length) inputs[inputs.length - 1].focus();
     });
 
-    populateTenorSelect(document.getElementById('newPremiumFrom'));
-    populateTenorSelect(document.getElementById('newPremiumTo'));
+    populatePremiumSelect(document.getElementById('newPremiumFrom'));
+    populatePremiumSelect(document.getElementById('newPremiumTo'));
     document.getElementById('newPremiumFrom').value = isCashHidden() ? (isTomHidden() ? 'spot' : 'tom') : 'cash';
     document.getElementById('newPremiumTo').value = 'spot';
     document.getElementById('addPremiumBtn').addEventListener('click', () => {
@@ -1528,8 +1663,8 @@
     // "Same premium to many tenors at once" — e.g. Cash → 1W, 2W, 3W, 1M
     // all sharing one typed premium, instead of adding each pair one at
     // a time and re-typing the same number into every row.
-    populateTenorSelect(document.getElementById('bulkPremiumFrom'));
-    populateTenorSelect(document.getElementById('bulkPremiumTo'));
+    populatePremiumSelect(document.getElementById('bulkPremiumFrom'));
+    populatePremiumSelect(document.getElementById('bulkPremiumTo'));
     document.getElementById('bulkPremiumFrom').value = isCashHidden() ? (isTomHidden() ? 'spot' : 'tom') : 'cash';
     document.getElementById('addBulkPremiumBtn').addEventListener('click', () => {
       const from = document.getElementById('bulkPremiumFrom').value;
@@ -1569,8 +1704,12 @@
       if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); return; }
       state.brokenDates.push({ id: nextBrokenDateId++, dateStr: iso, rate: '' });
       input.value = '';
-      renderBrokenDates();
-      renderQuoteScreen();
+      // recompute() + renderDownstream() (which refreshes the Premium
+      // Entries dropdowns via refreshTenorSelects) is what makes this new
+      // Odd Date immediately pickable as a Tenor 1 / Tenor 2 there.
+      recompute();
+      renderPremiumTable();
+      renderDownstream();
       scheduleSaveDraft();
     });
 
