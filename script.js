@@ -1002,27 +1002,44 @@
   function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
     const rows = buildDisplayRows();
     const n = rows.length;
-    const rowH = 10;
-    const slot = 11.5;
-    const topPad = 7;
+    const rowH = 12;
+    const slot = 14;
+    const topPad = 8;
     const height = topPad + n * slot + 5;
 
     // One common Bid/Offer column (merging the Payer-process and
-    // Receiver-process candidates — see computeSwapBest) plus a Diff
-    // column showing that tenor's own bid-offer spread. No more
-    // separate Payer/Receiver columns.
-    const viewW = 300;
+    // Receiver-process candidates — see computeSwapBest). The old
+    // separate "Diff" column (bid/offer spread) has been removed — it
+    // crowded the ladder on narrower screens for not much benefit, and
+    // removing it frees up width that goes straight into making
+    // everything else read bigger and more clearly spaced instead.
+    const viewW = 240;
     const tenorX = 3;
     const colW = 190; // tenor label + price share this one column
     const railX = tenorX + colW + 8; // between-tenor premium bracket rail
-    const diffRightX = viewW - 4; // Diff column, right-anchored
+    const premRightX = viewW - 4; // right edge of the premium/curve column
+
+    // Full, un-rounded Payer difference and Receiver difference between
+    // two tenors (or Odd Dates — anything with an entry in `curve`),
+    // computed straight from the solved curve rather than from whichever
+    // single blended number the ladder happens to be displaying. This is
+    // what the hover tooltip on a premium curve shows — the small inline
+    // tag elsewhere on the ladder only ever shows one rounded, pips-only
+    // number, whereas hovering the curve itself gives the real, full
+    // numbers for BOTH processes at once, even when they disagree.
+    function diffTooltip(keyA, keyB) {
+      const ca = curve[keyA];
+      const cb = curve[keyB];
+      const payerDiff = ca && cb && isNum(ca.payerBid) && isNum(cb.payerBid) ? (cb.payerBid - ca.payerBid) * 100 : null;
+      const receiverDiff = ca && cb && isNum(ca.receiverOffer) && isNum(cb.receiverOffer) ? (cb.receiverOffer - ca.receiverOffer) * 100 : null;
+      return `Payer diff: ${payerDiff !== null ? fmtTrim(payerDiff) : '—'}\nReceiver diff: ${receiverDiff !== null ? fmtTrim(receiverDiff) : '—'}`;
+    }
 
     const rowY = (i) => topPad + i * slot;
     const rowCenterY = (i) => rowY(i) + rowH / 2;
 
-    let svg = `<svg class="ladder-svg" viewBox="0 0 ${viewW} ${height}" width="100%" role="img" aria-label="Rate ladder with bid/offer and spread">`;
+    let svg = `<svg class="ladder-svg" viewBox="0 0 ${viewW} ${height}" width="100%" role="img" aria-label="Rate ladder with bid/offer">`;
     svg += `<text x="${tenorX}" y="7" class="ladder-heading">Bid / Offer</text>`;
-    svg += `<text x="${diffRightX}" y="7" text-anchor="end" class="ladder-heading">Diff</text>`;
 
     // Pre-pass: figure out every row's link info FIRST (before rendering
     // any row), so a source tenor appearing earlier in the ladder than
@@ -1189,16 +1206,11 @@
       const editRect = showEditable ? `
         <rect x="${tenorX + colW - 94}" y="${y}" width="91" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
       const outerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${isChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
-      const diffColW = viewW - 4 - (railX + 32);
-      const diffX = railX + 32;
       svg += `
         <rect x="${tenorX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
         <text x="${tenorX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan>${ownTag}</text>
         <text x="${tenorX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerClass}" pointer-events="none">${priceLine}<tspan class="ladder-premium-inline"> ${premLabel}</tspan></text>
         ${editRect}
-
-        <rect x="${diffX}" y="${y}" width="${diffColW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
-        <text x="${diffRightX}" y="${cy}" text-anchor="end" dominant-baseline="central" class="ladder-premium">${spreadLabel}</text>
 
         <line x1="${tenorX + colW}" y1="${cy}" x2="${railX}" y2="${cy}" class="ladder-tick"></line>
       `;
@@ -1211,11 +1223,12 @@
       const b = rows[i + 1];
       const midY = (rowCenterY(i) + rowCenterY(i + 1)) / 2;
       const prem = isNum(a.val) && isNum(b.val) ? fmtTrim((b.val - a.val) * 100) : '—';
-      // Only offer click-to-edit between two real tenors (not a broken/odd
-      // date row, which isn't part of the premium graph and has no from/to
-      // Tenor pair to attach an entry to).
-      const editablePremRect = (a.kind === 'tenor' && b.kind === 'tenor') ? `
-        <rect x="${railX}" y="${midY - rowH / 2}" width="${diffRightX - railX}" height="${rowH}" fill="transparent" class="ladder-prem-editable" style="cursor:pointer;" data-from="${a.key}" data-to="${b.key}"></rect>` : '';
+      // Editing is only possible between two real graph nodes (tenor or
+      // Odd Date — anything with a genuine key in the premium graph);
+      // hovering for the full Payer/Receiver breakdown works the same
+      // way regardless.
+      const editablePremRect = `
+        <rect x="${railX}" y="${midY - rowH / 2}" width="${premRightX - railX}" height="${rowH}" fill="transparent" class="ladder-prem-editable" style="cursor:pointer;" data-from="${a.key}" data-to="${b.key}"><title>${diffTooltip(a.key, b.key)}</title></rect>`;
       svg += `<text x="${railX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium" pointer-events="none">${prem}</text>${editablePremRect}`;
     }
 
@@ -1247,22 +1260,26 @@
         const lineCls = link.process === 'receiver' ? 'ladder-source-line-receiver' : 'ladder-source-line-payer';
         svg += `<path d="${d}" fill="none" class="${lineCls}"></path>`;
 
-        // If this curve represents exactly one Premium Entry directly
-        // connecting these two tenors — not several hops chained
-        // together — draw an invisible wide "hit" path right over it so
-        // clicking anywhere along the curve (however far apart the two
-        // rows are, e.g. Spot all the way to 1 Month) opens that exact
-        // Premium Entry for editing, the same as the between-adjacent-
-        // rows regions already do. A multi-hop derivation has no single
-        // entry to edit, so no click target is drawn for those.
+        // A wide invisible "hit" path drawn right over the visible curve
+        // — always present, however far apart the two rows are (e.g.
+        // Spot all the way to 1 Month) — so hovering anywhere along it
+        // shows the full, un-rounded Payer difference AND Receiver
+        // difference between those two tenors, regardless of which one
+        // is actually driving the price shown. If this curve also
+        // happens to represent exactly one Premium Entry directly
+        // connecting these two tenors (not several hops chained
+        // together), it's clickable too, opening that entry for editing
+        // exactly like the between-adjacent-rows regions do — a
+        // multi-hop derivation has no single entry to edit, so hovering
+        // it still works but clicking does nothing.
         const rowA = rowKeys[lo];
         const rowB = rowKeys[hi];
         const directEntry = state.premiumEntries.find(
           (pe) => (pe.from === rowA && pe.to === rowB) || (pe.from === rowB && pe.to === rowA)
         );
-        if (directEntry) {
-          svg += `<path d="${d}" fill="none" stroke="transparent" stroke-width="8" class="ladder-prem-editable" style="cursor:pointer;" data-from="${rowA}" data-to="${rowB}"></path>`;
-        }
+        const hitClass = directEntry ? 'ladder-prem-editable' : '';
+        const hitCursor = directEntry ? 'cursor:pointer;' : '';
+        svg += `<path d="${d}" fill="none" stroke="transparent" stroke-width="8" class="${hitClass}" style="${hitCursor}" data-from="${rowA}" data-to="${rowB}"><title>${diffTooltip(rowA, rowB)}</title></path>`;
       });
     });
 
