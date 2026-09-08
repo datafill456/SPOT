@@ -1246,6 +1246,23 @@
           : `M ${x} ${y1} L ${x} ${y2}`;
         const lineCls = link.process === 'receiver' ? 'ladder-source-line-receiver' : 'ladder-source-line-payer';
         svg += `<path d="${d}" fill="none" class="${lineCls}"></path>`;
+
+        // If this curve represents exactly one Premium Entry directly
+        // connecting these two tenors — not several hops chained
+        // together — draw an invisible wide "hit" path right over it so
+        // clicking anywhere along the curve (however far apart the two
+        // rows are, e.g. Spot all the way to 1 Month) opens that exact
+        // Premium Entry for editing, the same as the between-adjacent-
+        // rows regions already do. A multi-hop derivation has no single
+        // entry to edit, so no click target is drawn for those.
+        const rowA = rowKeys[lo];
+        const rowB = rowKeys[hi];
+        const directEntry = state.premiumEntries.find(
+          (pe) => (pe.from === rowA && pe.to === rowB) || (pe.from === rowB && pe.to === rowA)
+        );
+        if (directEntry) {
+          svg += `<path d="${d}" fill="none" stroke="transparent" stroke-width="8" class="ladder-prem-editable" style="cursor:pointer;" data-from="${rowA}" data-to="${rowB}"></path>`;
+        }
       });
     });
 
