@@ -1069,7 +1069,7 @@
     // crowded the ladder on narrower screens for not much benefit, and
     // removing it frees up width that goes straight into making
     // everything else read bigger and more clearly spaced instead.
-    const viewW = 240;
+    const viewW = 280;
     const tenorX = 3;
     const colW = 190; // tenor label + price share this one column
     const railX = tenorX + colW + 8; // between-tenor premium bracket rail
@@ -1295,6 +1295,32 @@
     // both trace back to the same source row, only one line is drawn
     // (they'd overlap anyway).
     const rowKeys = rows.map((r) => r.key);
+    // How far a curve is allowed to bulge out to the right before hitting
+    // the edge of the premium/curve column — used below to size each
+    // curve's bulge by how many rows it actually spans (a Spot -> 1 Month
+    // curve swings out much further than a Spot -> 2 Weeks one) and to
+    // nudge a curve further out again if its bulge would otherwise sit
+    // right on top of another curve already drawn nearby, so several
+    // curves sharing the same stretch of rows stay visually separate
+    // instead of overlapping into one blurred line.
+    const maxBulge = premRightX - railX - 10;
+    const usedBulges = [];
+    function pickBulge(lo, hi) {
+      let bulge = Math.min(maxBulge, 10 + (hi - lo - 1) * 9);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const u of usedBulges) {
+          const overlaps = lo < u.hi && hi > u.lo; // their row ranges intersect
+          if (overlaps && Math.abs(u.bulge - bulge) < 7) {
+            bulge = Math.min(maxBulge, bulge + 9);
+            changed = true;
+          }
+        }
+      }
+      usedBulges.push({ lo, hi, bulge });
+      return bulge;
+    }
     rows.forEach((row, i) => {
       const links = [row.bidLink, row.offerLink].filter(Boolean);
       const seen = new Set();
@@ -1310,8 +1336,9 @@
         const y2 = rowCenterY(hi);
         const x = railX;
         const skips = hi - lo > 1;
+        const bulge = skips ? pickBulge(lo, hi) : 0;
         const d = skips
-          ? `M ${x} ${y1} Q ${x + 16} ${(y1 + y2) / 2} ${x} ${y2}`
+          ? `M ${x} ${y1} Q ${x + bulge} ${(y1 + y2) / 2} ${x} ${y2}`
           : `M ${x} ${y1} L ${x} ${y2}`;
         const lineCls = link.process === 'receiver' ? 'ladder-source-line-receiver' : 'ladder-source-line-payer';
         svg += `<path d="${d}" fill="none" class="${lineCls}"></path>`;
