@@ -273,7 +273,39 @@
     const guesses = state.rateEntries.map((re) => {
       const override = parseFloat(re.bigFigureOverride);
       const hasOverride = isFinite(override);
-      const bfGuess = hasOverride ? override : estimateBigFigureForTenor(re.node, baseBF, state.valueDates.days);
+      let bfGuess = hasOverride ? override : estimateBigFigureForTenor(re.node, baseBF, state.valueDates.days);
+
+      // Offer-only shorthand ("/00") or bid-only shorthand ("80/") needs
+      // to roll onto the correct Big Figure relative to THIS SAME
+      // tenor's other side — whether that other side is a typed
+      // Outright or a chain-CREATED price — exactly like typing both
+      // sides together already rolls the offer forward whenever its
+      // pips are smaller than the bid's (e.g. "80/00"). Read from
+      // state.swapBest, i.e. the ladder as it stood after the last
+      // recompute — the only side that isn't known yet in THIS pass is
+      // the very side the dealer just typed, so last cycle's settled
+      // value for the OTHER side is exactly the reference needed.
+      if (!hasOverride) {
+        const parts = (re.rate || '').split('/').map((s) => s.trim());
+        if (parts.length > 1) {
+          const bidRaw = parseFloat(parts[0]);
+          const offerRaw = parseFloat(parts[1]);
+          const bidTyped = isFinite(bidRaw) && Math.abs(bidRaw) < 100;
+          const offerTyped = isFinite(offerRaw) && Math.abs(offerRaw) < 100;
+          const priorRow = (state.swapBest || {})[re.node];
+
+          if (offerTyped && !bidTyped && priorRow && priorRow.bid && isNum(priorRow.bid.val)) {
+            const bidBF = Math.floor(priorRow.bid.val);
+            const bidPips = Math.round((priorRow.bid.val - bidBF) * 100);
+            bfGuess = offerRaw < bidPips ? bidBF + 1 : bidBF;
+          } else if (bidTyped && !offerTyped && priorRow && priorRow.offer && isNum(priorRow.offer.val)) {
+            const offerBF = Math.floor(priorRow.offer.val);
+            const offerPips = Math.round((priorRow.offer.val - offerBF) * 100);
+            bfGuess = bidRaw > offerPips ? offerBF - 1 : offerBF;
+          }
+        }
+      }
+
       const r = parseRateShorthand(re.rate, bfGuess);
       return { node: re.node, rateStr: re.rate, bid: r.bid, offer: r.offer, hasOverride };
     });
@@ -332,6 +364,24 @@
     state.anchors = anchors;
     state.anchorByNode = {};
     anchors.forEach((a) => { state.anchorByNode[a.node] = a; });
+
+    // How many decimals the whole ladder displays rates at. Normally 2
+    // (standard USD/LKR convention), but the moment ANY typed rate —
+    // whether a Rate Entry or an Odd Date's own Rate — genuinely needs a
+    // 3rd/4th decimal (i.e. rounding it to 2dp would actually change its
+    // value), the WHOLE ladder switches to 4dp so every created price
+    // built from it keeps that same precision too, instead of being
+    // silently truncated back down to 2dp.
+    const neededDecimalsFor = (v) => (isNum(v) && Math.abs(v - parseFloat(v.toFixed(2))) > 1e-9 ? 4 : 2);
+    let rateDecimals = 2;
+    anchors.forEach((a) => {
+      rateDecimals = Math.max(rateDecimals, neededDecimalsFor(a.bid), neededDecimalsFor(a.offer));
+    });
+    brokenAnchors.forEach((a) => {
+      rateDecimals = Math.max(rateDecimals, neededDecimalsFor(a.bid), neededDecimalsFor(a.offer));
+    });
+    state.rateDecimals = rateDecimals;
+
     state.swapBest = computeSwapBest();
 
     // Match detection: a Premium Entry "confirms" against the board when
@@ -665,16 +715,22 @@
   /** [bid, offer] -> ["336.20","336.40"] — always the FULL rate, same
    *  format for every tenor and for both sides, regardless of Big
    *  Figure. (Shorthand "points off the Big Figure" has been removed so
-   *  every tenor rate on the dashboard reads the same way.) */
-  function fmtRatePairParts(bid, offer) {
-    const full = (v) => (v === null ? '—' : fmtNum(v));
+   *  every tenor rate on the dashboard reads the same way.) Decimal
+   *  count follows state.rateDecimals — 2 normally, 4 the moment any
+   *  typed rate actually needs that precision — so a created price never
+   *  gets truncated back down below what was actually typed. */
+  function fmtRatePairParts(bid, offer, dp) {
+    const d = dp || state.rateDecimals || 2;
+    const full = (v) => (v === null ? '—' : fmtNum(v, d));
     return [full(bid), full(offer)];
   }
 
-  /** Just the last two digits past the decimal point, e.g. 336.45 -> "45" — used only for the small created>outright comparison tag, never for a rate shown on its own. */
-  function fmtPipsOnly(v) {
-    const p = Math.round((Math.abs(v) % 1) * 100);
-    return String(p).padStart(2, '0');
+  /** Just the digits past the decimal point (2 or 4, matching state.rateDecimals), e.g. 336.45 -> "45" or 336.4550 -> "4550" — used only for the small created/outright comparison tag, never for a rate shown on its own. */
+  function fmtPipsOnly(v, dp) {
+    const d = dp || state.rateDecimals || 2;
+    const scale = Math.pow(10, d);
+    const p = Math.round((Math.abs(v) % 1) * scale);
+    return String(p).padStart(d, '0');
   }
 
   function renderHeader() {
@@ -1537,8 +1593,8 @@
             ${dateInputCell}
             ${rateInputCell}
             <td class="mono">${daysLabel}</td>
-            <td class="mono ${hasTypedPayer ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(payerRate)}${payerTag}</td>
-            <td class="mono ${hasTypedReceiver ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(receiverRate)}${receiverTag}</td>
+            <td class="mono ${hasTypedPayer ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(payerRate, state.rateDecimals || 2)}${payerTag}</td>
+            <td class="mono ${hasTypedReceiver ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(receiverRate, state.rateDecimals || 2)}${receiverTag}</td>
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
         }
