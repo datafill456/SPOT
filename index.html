@@ -4,6 +4,10 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>MVS FX Terminal — USD/LKR Money Market Dealing Screen</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0a0e14" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" href="icon-192.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css" />
@@ -212,5 +216,19 @@
 <script src="storage.js"></script>
 <script src="excel.js"></script>
 <script src="script.js"></script>
+<script>
+  // Registering this is what makes Chrome/Edge offer "Install MVS FX
+  // Terminal" (address bar icon, or the browser menu) so it runs as its
+  // own desktop app with a real icon and window instead of a browser
+  // tab. Wrapped in a feature check + try/catch so nothing breaks on a
+  // browser that doesn't support service workers at all.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch((err) => {
+        console.warn('Service worker registration failed (app still works normally, just without install/offline support):', err);
+      });
+    });
+  }
+</script>
 </body>
 </html>
