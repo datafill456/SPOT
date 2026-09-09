@@ -57,6 +57,15 @@
     opacity: 0.5;
     fill: none;
   }
+  /* Layered on top of -payer/-receiver (keeps that same colour) for a
+     curve that shows a losing chain-CREATED challenger next to an
+     Outright that's actually winning/displayed — fainter and more
+     finely dotted than a normal "this is where the value came from"
+     source line, since it's just a comparison, not the real source. */
+  .ladder-source-line-challenger {
+    opacity: 0.28;
+    stroke-dasharray: 1 3;
+  }
   #matchBanner, #mismatchBanner { margin-bottom: 10px; }
   .match-line {
     padding: 6px 10px;
