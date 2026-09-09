@@ -1076,19 +1076,42 @@
     const premRightX = viewW - 4; // right edge of the premium/curve column
 
     // Full, un-rounded Payer difference and Receiver difference between
-    // two tenors (or Odd Dates — anything with an entry in `curve`),
-    // computed straight from the solved curve rather than from whichever
-    // single blended number the ladder happens to be displaying. This is
-    // what the hover tooltip on a premium curve shows — the small inline
-    // tag elsewhere on the ladder only ever shows one rounded, pips-only
-    // number, whereas hovering the curve itself gives the real, full
-    // numbers for BOTH processes at once, even when they disagree.
+    // two tenors (or Odd Dates — anything with an entry in `curve`).
+    // Reads from state.swapBest when available (standard tenors) — the
+    // properly MERGED best-of-typed-outright-vs-created value for each
+    // side — rather than the raw single-anchor graph solve in `curve`,
+    // which only keeps track of ONE anchor per connected component and
+    // would otherwise silently ignore a second, directly-dealt rate on
+    // the far tenor. Falls back to the raw curve value for anything
+    // without a swapBest entry (Odd/Broken Dates), which never have more
+    // than one competing candidate to merge in the first place.
+    //
+    // Alongside the flat totals, this also shows what that difference
+    // works out to PER DAY for each process — this is the actual number
+    // that should be quoted between these two dates: if one side's rate
+    // was really dealt and the other is a created/chain price (or vice
+    // versa), dividing their real difference by the calendar days
+    // between them gives the per-day premium that reconciles the two,
+    // for both Payer and Receiver at once, regardless of whether a
+    // Premium Entry between them happens to be flagged "Per Day" or
+    // holds a flat number instead.
     function diffTooltip(keyA, keyB) {
+      const bestA = state.swapBest && state.swapBest[keyA];
+      const bestB = state.swapBest && state.swapBest[keyB];
       const ca = curve[keyA];
       const cb = curve[keyB];
-      const payerDiff = ca && cb && isNum(ca.payerBid) && isNum(cb.payerBid) ? (cb.payerBid - ca.payerBid) * 100 : null;
-      const receiverDiff = ca && cb && isNum(ca.receiverOffer) && isNum(cb.receiverOffer) ? (cb.receiverOffer - ca.receiverOffer) * 100 : null;
-      return `Payer diff: ${payerDiff !== null ? fmtTrim(payerDiff) : '—'}\nReceiver diff: ${receiverDiff !== null ? fmtTrim(receiverDiff) : '—'}`;
+      const bidA = bestA && isNum(bestA.bid.val) ? bestA.bid.val : (ca && ca.payerBid);
+      const bidB = bestB && isNum(bestB.bid.val) ? bestB.bid.val : (cb && cb.payerBid);
+      const offerA = bestA && isNum(bestA.offer.val) ? bestA.offer.val : (ca && ca.receiverOffer);
+      const offerB = bestB && isNum(bestB.offer.val) ? bestB.offer.val : (cb && cb.receiverOffer);
+
+      const days = FXCalendar.calendarDaysBetween(nodeDate(keyA), nodeDate(keyB));
+      const payerDiff = isNum(bidA) && isNum(bidB) ? (bidB - bidA) * 100 : null;
+      const receiverDiff = isNum(offerA) && isNum(offerB) ? (offerB - offerA) * 100 : null;
+      const payerPerDay = payerDiff !== null && days ? payerDiff / days : null;
+      const receiverPerDay = receiverDiff !== null && days ? receiverDiff / days : null;
+      const perDayTag = (v) => (v !== null ? ` (${fmtTrim(v, 4)} p/day)` : '');
+      return `Payer diff: ${payerDiff !== null ? fmtTrim(payerDiff) : '—'}${perDayTag(payerPerDay)}\nReceiver diff: ${receiverDiff !== null ? fmtTrim(receiverDiff) : '—'}${perDayTag(receiverPerDay)}`;
     }
 
     const rowY = (i) => topPad + i * slot;
@@ -1112,6 +1135,8 @@
         const info = autoLinkInfoFor(row.key);
         row.bidLink = info.bid;
         row.offerLink = info.offer;
+        row.bidChallengerLink = info.bidChallenger;
+        row.offerChallengerLink = info.offerChallenger;
       }
     });
 
@@ -1329,12 +1354,25 @@
       return bulge;
     }
     rows.forEach((row, i) => {
-      const links = [row.bidLink, row.offerLink].filter(Boolean);
+      // Real links (the actual source of a CREATED value that's winning
+      // and being displayed) plus challenger links (an Outright is
+      // winning and being displayed, but a created chain price also
+      // exists and disagrees with it — the "one side was really dealt,
+      // compare it against the created/chain price" case). Both get a
+      // curve and the same hover tooltip; only challenger curves get the
+      // lighter/dashed styling so it's clear at a glance which kind of
+      // relationship each curve represents.
+      const links = [
+        row.bidLink && { ...row.bidLink, isChallenger: false },
+        row.offerLink && { ...row.offerLink, isChallenger: false },
+        row.bidChallengerLink && { ...row.bidChallengerLink, isChallenger: true },
+        row.offerChallengerLink && { ...row.offerChallengerLink, isChallenger: true },
+      ].filter(Boolean);
       const seen = new Set();
       links.forEach((link) => {
         const sourceIdx = rowKeys.indexOf(link.source);
         if (sourceIdx === -1 || sourceIdx === i) return;
-        const dedupeKey = `${sourceIdx}:${link.process}`;
+        const dedupeKey = `${sourceIdx}:${link.process}:${link.isChallenger ? 'c' : 'r'}`;
         if (seen.has(dedupeKey)) return;
         seen.add(dedupeKey);
         const lo = Math.min(sourceIdx, i);
@@ -1347,7 +1385,8 @@
         const d = skips
           ? `M ${x} ${y1} Q ${x + bulge} ${(y1 + y2) / 2} ${x} ${y2}`
           : `M ${x} ${y1} L ${x} ${y2}`;
-        const lineCls = link.process === 'receiver' ? 'ladder-source-line-receiver' : 'ladder-source-line-payer';
+        const lineCls = (link.process === 'receiver' ? 'ladder-source-line-receiver' : 'ladder-source-line-payer')
+          + (link.isChallenger ? ' ladder-source-line-challenger' : '');
         svg += `<path d="${d}" fill="none" class="${lineCls}"></path>`;
 
         // A wide invisible "hit" path drawn right over the visible curve
@@ -1454,7 +1493,24 @@
   function autoLinkInfoFor(tenor) {
     const best = (state.swapBest || {})[tenor] || {};
     const side = (cand) => (cand && cand.source && cand.source !== 'outright') ? { source: cand.source, process: cand.process } : null;
-    return { bid: side(best.bid), offer: side(best.offer) };
+    // When the Outright actually won a side (a real dealt rate, or just
+    // whatever's typed), but a genuine chain-CREATED challenger also
+    // exists and differs from it, this is the exact "one side was dealt
+    // — compare it against the created/chain price" case: there'd
+    // otherwise be no curve at all to hover for it, since a curve is
+    // normally only drawn for whichever value is actually being shown.
+    const challenger = (winner, createdOnly) => {
+      if (!winner || winner.source !== 'outright') return null; // only relevant once Outright is the one actually winning/displayed
+      if (!createdOnly || !isNum(createdOnly.val) || !createdOnly.source) return null;
+      if (roundsToSame(winner.val, createdOnly.val)) return null;
+      return { source: createdOnly.source, process: createdOnly.process };
+    };
+    return {
+      bid: side(best.bid),
+      offer: side(best.offer),
+      bidChallenger: challenger(best.bid, best.bidCreatedOnly),
+      offerChallenger: challenger(best.offer, best.offerCreatedOnly),
+    };
   }
 
   function applyLadderEdit(tenor, raw) {
