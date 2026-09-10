@@ -1998,7 +1998,64 @@
 
     wireStaticControls();
     wireTabs();
+    wireKeyboardShortcuts();
     renderAllViews();
+  }
+
+  /**
+   * Number-key shortcuts for opening a tenor's Rate editor without
+   * touching the mouse — 0 opens Cash, 1 opens Tom, 2 opens Spot, and so
+   * on down TENOR_ORDER through 9 (4 Months, index 9). Since a bare
+   * digit only covers indices 0–9, the remaining tenors (5M through 12M,
+   * indices 10–17) are reached by pressing "a" followed by a digit —
+   * a0 = index 10 (5M), a1 = index 11 (6M), … a7 = index 17 (12M). A
+   * bare digit acts immediately with no waiting; only after "a" does the
+   * next key get treated as the second half of a two-key shortcut.
+   * Only active while nothing is already being typed into — an open
+   * input, textarea, select, or the ladder's own inline rate editor all
+   * suppress this so ordinary typing is never hijacked.
+   */
+  function wireKeyboardShortcuts() {
+    let awaitingSecondKey = false; // true right after "a" is pressed, waiting for its digit
+
+    function openTenorByIndex(idx) {
+      const tenor = TENORS[idx];
+      if (!tenor) return; // out of range, or that index doesn't exist (e.g. only 18 tenors total)
+      const rect = document.querySelector(`.ladder-val-editable[data-tenor="${tenor}"]`);
+      const wrap = document.getElementById('quoteLadderWrap');
+      if (rect && wrap) openLadderEditor(rect, wrap); // same editor, same behaviour as clicking it directly
+      // If that tenor is hidden today (e.g. Cash/Tom on a US holiday) there's
+      // simply no rect to open — nothing happens, no error.
+    }
+
+    document.addEventListener('keydown', (e) => {
+      const tag = (e.target && e.target.tagName || '').toLowerCase();
+      const isEditing = tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable);
+      if (isEditing) { awaitingSecondKey = false; return; } // an edit box is already open — let normal typing happen
+
+      const key = e.key.toLowerCase();
+
+      if (awaitingSecondKey) {
+        awaitingSecondKey = false;
+        if (/^[0-9]$/.test(key)) {
+          e.preventDefault();
+          openTenorByIndex(10 + parseInt(key, 10));
+        }
+        // Anything other than a digit right after "a" just cancels quietly.
+        return;
+      }
+
+      if (key === 'a') {
+        awaitingSecondKey = true;
+        e.preventDefault();
+        return;
+      }
+
+      if (/^[0-9]$/.test(key)) {
+        e.preventDefault();
+        openTenorByIndex(parseInt(key, 10));
+      }
+    });
   }
 
   function wireTabs() {
