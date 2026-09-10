@@ -1111,7 +1111,8 @@
       const payerPerDay = payerDiff !== null && days ? payerDiff / days : null;
       const receiverPerDay = receiverDiff !== null && days ? receiverDiff / days : null;
       const perDayTag = (v) => (v !== null ? ` (${fmtTrim(v, 4)} p/day)` : '');
-      return `Payer diff: ${payerDiff !== null ? fmtTrim(payerDiff) : '—'}${perDayTag(payerPerDay)}\nReceiver diff: ${receiverDiff !== null ? fmtTrim(receiverDiff) : '—'}${perDayTag(receiverPerDay)}`;
+      const dp = state.rateDecimals || 2;
+      return `Payer diff: ${payerDiff !== null ? fmtTrim(payerDiff, dp) : '—'}${perDayTag(payerPerDay)}\nReceiver diff: ${receiverDiff !== null ? fmtTrim(receiverDiff, dp) : '—'}${perDayTag(receiverPerDay)}`;
     }
 
     const rowY = (i) => topPad + i * slot;
