@@ -1111,7 +1111,8 @@
       const payerPerDay = payerDiff !== null && days ? payerDiff / days : null;
       const receiverPerDay = receiverDiff !== null && days ? receiverDiff / days : null;
       const perDayTag = (v) => (v !== null ? ` (${fmtTrim(v, 4)} p/day)` : '');
-      return `Payer diff: ${payerDiff !== null ? fmtTrim(payerDiff) : '—'}${perDayTag(payerPerDay)}\nReceiver diff: ${receiverDiff !== null ? fmtTrim(receiverDiff) : '—'}${perDayTag(receiverPerDay)}`;
+      const dp = state.rateDecimals || 2;
+      return `Payer diff: ${payerDiff !== null ? fmtTrim(payerDiff, dp) : '—'}${perDayTag(payerPerDay)}\nReceiver diff: ${receiverDiff !== null ? fmtTrim(receiverDiff, dp) : '—'}${perDayTag(receiverPerDay)}`;
     }
 
     const rowY = (i) => topPad + i * slot;
@@ -1284,12 +1285,20 @@
       const ownTagNum = linkTagNumber[t];
       const ownTag = ownTagNum ? `<tspan class="ladder-link-tag"> ${ownTagNum}</tspan>` : '';
 
+      // Keyboard-shortcut hint: the same key(s) that open this tenor's
+      // Rate editor with no mouse at all — 0-9 directly, a0-a7 for the
+      // rest (see wireKeyboardShortcuts). Odd/Broken Date rows have no
+      // shortcut of their own, so nothing is shown for those.
+      const shortcutIdx = row.kind === 'tenor' ? TENORS.indexOf(t) : -1;
+      const shortcutLabel = shortcutIdx < 0 ? '' : (shortcutIdx < 10 ? String(shortcutIdx) : `a${shortcutIdx - 10}`);
+      const shortcutTag = shortcutLabel ? `<tspan class="ladder-shortcut-hint"> [${shortcutLabel}]</tspan>` : '';
+
       const editRect = showEditable ? `
         <rect x="${tenorX + colW - 94}" y="${y}" width="91" height="${rowH}" fill="transparent" class="ladder-val-editable" style="cursor:pointer;" data-tenor="${t}"></rect>` : '';
       const outerClass = row.kind === 'tenor' ? 'ladder-val' : `ladder-val ${isChainDerived ? 'ladder-src-created' : 'ladder-src-outright'}`;
       svg += `
         <rect x="${tenorX}" y="${y}" width="${colW}" height="${rowH}" rx="2" class="ladder-row${rowExtraClass}"></rect>
-        <text x="${tenorX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan>${ownTag}</text>
+        <text x="${tenorX + 4}" y="${cy}" dominant-baseline="central" class="ladder-tenor">${rowLabel}${shortcutTag}<tspan class="ladder-bigfig"> ${bigFigLabel}</tspan>${ownTag}</text>
         <text x="${tenorX + colW - 4}" y="${cy}" text-anchor="end" dominant-baseline="central" class="${outerClass}" pointer-events="none">${priceLine}<tspan class="ladder-premium-inline"> ${premLabel}</tspan></text>
         ${editRect}
 
@@ -1997,7 +2006,161 @@
 
     wireStaticControls();
     wireTabs();
+    wireKeyboardShortcuts();
     renderAllViews();
+  }
+
+  /**
+   * Number-key shortcuts for opening a tenor's Rate editor without
+   * touching the mouse — 0 opens Cash, 1 opens Tom, 2 opens Spot, and so
+   * on down TENOR_ORDER through 9 (4 Months, index 9). Since a bare
+   * digit only covers indices 0–9, the remaining tenors (5M through 12M,
+   * indices 10–17) are reached by pressing "a" followed by a digit —
+   * a0 = index 10 (5M), a1 = index 11 (6M), … a7 = index 17 (12M). The
+   * matching shortcut is also shown right next to each tenor's name on
+   * the ladder itself (in square brackets) as a reminder.
+   *
+   * Typing two of these one after another separated by a comma — e.g.
+   * "0,1" or "1,3" — opens the PREMIUM editor between those two tenors
+   * instead (Cash→Tom, Tom→1 Week in those two examples), exactly as if
+   * that link on the ladder had been clicked directly.
+   *
+   * A single index only actually opens its Rate editor after a brief
+   * pause with nothing else pressed — just long enough to see whether a
+   * comma is about to turn it into the first half of a pair — so typing
+   * "0,1" doesn't first flash open Cash's Rate editor before switching
+   * to the Cash→Tom Premium editor.
+   *
+   * Only active while nothing is already being typed into — an open
+   * input, textarea, select, or the ladder's own inline rate/premium
+   * editor all suppress this so ordinary typing is never hijacked.
+   */
+  function wireKeyboardShortcuts() {
+    const PAIR_WAIT_MS = 380; // long enough to catch a following comma, short enough to still feel instant
+    let awaitingSecondKey = false; // true right after "a" is pressed, waiting for its digit
+    let firstIndex = null; // an index that fired, but might still turn into the first half of a pair
+    let firstTimer = null;
+    let awaitingPairSecondIndex = false; // true once a comma has confirmed we're building a pair
+
+    function tenorAt(idx) { return TENORS[idx]; }
+
+    function openRateEditorFor(idx) {
+      const tenor = tenorAt(idx);
+      if (!tenor) return; // out of range, or that index doesn't exist (e.g. only 18 tenors total)
+      const rect = document.querySelector(`.ladder-val-editable[data-tenor="${tenor}"]`);
+      const wrap = document.getElementById('quoteLadderWrap');
+      if (rect && wrap) openLadderEditor(rect, wrap); // same editor, same behaviour as clicking it directly
+      // If that tenor is hidden today (e.g. Cash/Tom on a US holiday) there's
+      // simply no rect to open — nothing happens, no error.
+    }
+
+    function openPremiumEditorFor(idxA, idxB) {
+      const tenorA = tenorAt(idxA);
+      const tenorB = tenorAt(idxB);
+      if (!tenorA || !tenorB || tenorA === tenorB) return;
+      const wrap = document.getElementById('quoteLadderWrap');
+      if (!wrap) return;
+
+      // Prefer an existing editable premium region that already connects
+      // these two exact tenors — the between-adjacent-rows strip, or an
+      // existing curve — opening through it behaves exactly like
+      // clicking it directly.
+      let target = wrap.querySelector(`.ladder-prem-editable[data-from="${tenorA}"][data-to="${tenorB}"]`)
+        || wrap.querySelector(`.ladder-prem-editable[data-from="${tenorB}"][data-to="${tenorA}"]`);
+
+      if (!target) {
+        // No such region is currently rendered (these two tenors aren't
+        // adjacent and no curve happens to connect them right now) —
+        // fall back to a small invisible marker positioned at the
+        // midpoint between their two Rate rows purely so the editor has
+        // something real to measure its on-screen position from; it's
+        // removed again immediately afterwards.
+        const rectA = document.querySelector(`.ladder-val-editable[data-tenor="${tenorA}"]`);
+        const rectB = document.querySelector(`.ladder-val-editable[data-tenor="${tenorB}"]`);
+        if (!rectA || !rectB) return; // one of the two tenors is hidden today — nothing to anchor to
+        const rA = rectA.getBoundingClientRect();
+        const rB = rectB.getBoundingClientRect();
+        const marker = document.createElement('div');
+        marker.style.position = 'fixed';
+        marker.style.left = `${(rA.left + rB.left) / 2}px`;
+        marker.style.top = `${(rA.top + rB.top) / 2}px`;
+        marker.dataset.from = tenorA;
+        marker.dataset.to = tenorB;
+        document.body.appendChild(marker);
+        openLadderPremiumEditor(marker, wrap);
+        marker.remove();
+        return;
+      }
+
+      openLadderPremiumEditor(target, wrap);
+    }
+
+    function resetPending() {
+      if (firstTimer) { clearTimeout(firstTimer); firstTimer = null; }
+      firstIndex = null;
+      awaitingPairSecondIndex = false;
+      awaitingSecondKey = false;
+    }
+
+    function fireFirstIndexAlone() {
+      firstTimer = null;
+      const idx = firstIndex;
+      firstIndex = null;
+      if (idx !== null) openRateEditorFor(idx);
+    }
+
+    document.addEventListener('keydown', (e) => {
+      const tag = (e.target && e.target.tagName || '').toLowerCase();
+      const isEditing = tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable);
+      if (isEditing) { resetPending(); return; } // an edit box is already open — let normal typing happen
+
+      const key = e.key.toLowerCase();
+
+      // A comma right after a pending first index switches to pair mode.
+      if (key === ',' && firstIndex !== null && !awaitingSecondKey) {
+        e.preventDefault();
+        if (firstTimer) { clearTimeout(firstTimer); firstTimer = null; }
+        awaitingPairSecondIndex = true;
+        return;
+      }
+
+      // Resolve whatever key this is into a completed index, if any.
+      let resolvedIndex = null;
+      if (awaitingSecondKey) {
+        awaitingSecondKey = false;
+        if (/^[0-9]$/.test(key)) {
+          e.preventDefault();
+          resolvedIndex = 10 + parseInt(key, 10);
+        } else {
+          return; // "a" followed by a non-digit just cancels quietly
+        }
+      } else if (key === 'a') {
+        awaitingSecondKey = true;
+        e.preventDefault();
+        return;
+      } else if (/^[0-9]$/.test(key)) {
+        e.preventDefault();
+        resolvedIndex = parseInt(key, 10);
+      } else {
+        // Any other, unrelated key: resolve a lone pending index now instead of waiting out its timer.
+        if (firstIndex !== null && !awaitingPairSecondIndex) fireFirstIndexAlone();
+        return;
+      }
+
+      if (awaitingPairSecondIndex) {
+        awaitingPairSecondIndex = false;
+        const idxA = firstIndex;
+        firstIndex = null;
+        openPremiumEditorFor(idxA, resolvedIndex);
+        return;
+      }
+
+      // A fresh index with nothing pending — hold it briefly in case a
+      // comma is about to arrive and turn it into a pair.
+      if (firstTimer) clearTimeout(firstTimer);
+      firstIndex = resolvedIndex;
+      firstTimer = setTimeout(fireFirstIndexAlone, PAIR_WAIT_MS);
+    });
   }
 
   function wireTabs() {
