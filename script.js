@@ -2020,27 +2020,28 @@
    * matching shortcut is also shown right next to each tenor's name on
    * the ladder itself (in square brackets) as a reminder.
    *
-   * Typing two of these one after another separated by a comma — e.g.
-   * "0,1" or "1,3" — opens the PREMIUM editor between those two tenors
-   * instead (Cash→Tom, Tom→1 Week in those two examples), exactly as if
-   * that link on the ladder had been clicked directly.
+   * Typing two of these one right after another — e.g. "01" or "13" —
+   * opens the PREMIUM editor between those two tenors instead (Cash→Tom,
+   * Tom→1 Week in those two examples), exactly as if that link on the
+   * ladder had been clicked directly. No comma or other separator is
+   * typed; the two index-codes are just typed back to back (this also
+   * works with an "a" one, e.g. "a1a2" for 6 Months→7 Months).
    *
    * A single index only actually opens its Rate editor after a brief
    * pause with nothing else pressed — just long enough to see whether a
-   * comma is about to turn it into the first half of a pair — so typing
-   * "0,1" doesn't first flash open Cash's Rate editor before switching
-   * to the Cash→Tom Premium editor.
+   * second index is about to follow it and turn it into a pair — so
+   * typing "01" doesn't first flash open Cash's Rate editor before
+   * switching to the Cash→Tom Premium editor.
    *
    * Only active while nothing is already being typed into — an open
    * input, textarea, select, or the ladder's own inline rate/premium
    * editor all suppress this so ordinary typing is never hijacked.
    */
   function wireKeyboardShortcuts() {
-    const PAIR_WAIT_MS = 380; // long enough to catch a following comma, short enough to still feel instant
+    const PAIR_WAIT_MS = 450; // long enough to catch a following index-code, short enough to still feel instant
     let awaitingSecondKey = false; // true right after "a" is pressed, waiting for its digit
-    let firstIndex = null; // an index that fired, but might still turn into the first half of a pair
-    let firstTimer = null;
-    let awaitingPairSecondIndex = false; // true once a comma has confirmed we're building a pair
+    let pendingIndex = null; // one fully-resolved index, waiting to see if a second one follows right after it
+    let pendingTimer = null;
 
     function tenorAt(idx) { return TENORS[idx]; }
 
@@ -2096,17 +2097,29 @@
     }
 
     function resetPending() {
-      if (firstTimer) { clearTimeout(firstTimer); firstTimer = null; }
-      firstIndex = null;
-      awaitingPairSecondIndex = false;
+      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+      pendingIndex = null;
       awaitingSecondKey = false;
     }
 
-    function fireFirstIndexAlone() {
-      firstTimer = null;
-      const idx = firstIndex;
-      firstIndex = null;
-      if (idx !== null) openRateEditorFor(idx);
+    // Call this once a key sequence has resolved into a complete tenor
+    // index (a bare digit, or "a"+digit) — decides whether it's the
+    // first half of a pair, or the second half completing one.
+    function indexResolved(idx) {
+      if (pendingIndex !== null) {
+        if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+        const first = pendingIndex;
+        pendingIndex = null;
+        openPremiumEditorFor(first, idx);
+      } else {
+        pendingIndex = idx;
+        pendingTimer = setTimeout(() => {
+          pendingTimer = null;
+          const idxToOpen = pendingIndex;
+          pendingIndex = null;
+          openRateEditorFor(idxToOpen);
+        }, PAIR_WAIT_MS);
+      }
     }
 
     document.addEventListener('keydown', (e) => {
@@ -2116,50 +2129,35 @@
 
       const key = e.key.toLowerCase();
 
-      // A comma right after a pending first index switches to pair mode.
-      if (key === ',' && firstIndex !== null && !awaitingSecondKey) {
-        e.preventDefault();
-        if (firstTimer) { clearTimeout(firstTimer); firstTimer = null; }
-        awaitingPairSecondIndex = true;
-        return;
-      }
-
-      // Resolve whatever key this is into a completed index, if any.
-      let resolvedIndex = null;
       if (awaitingSecondKey) {
         awaitingSecondKey = false;
         if (/^[0-9]$/.test(key)) {
           e.preventDefault();
-          resolvedIndex = 10 + parseInt(key, 10);
-        } else {
-          return; // "a" followed by a non-digit just cancels quietly
+          indexResolved(10 + parseInt(key, 10));
         }
-      } else if (key === 'a') {
+        // "a" followed by a non-digit just cancels quietly, leaving any already-pending index alone.
+        return;
+      }
+
+      if (key === 'a') {
         awaitingSecondKey = true;
         e.preventDefault();
         return;
-      } else if (/^[0-9]$/.test(key)) {
+      }
+
+      if (/^[0-9]$/.test(key)) {
         e.preventDefault();
-        resolvedIndex = parseInt(key, 10);
-      } else {
-        // Any other, unrelated key: resolve a lone pending index now instead of waiting out its timer.
-        if (firstIndex !== null && !awaitingPairSecondIndex) fireFirstIndexAlone();
+        indexResolved(parseInt(key, 10));
         return;
       }
 
-      if (awaitingPairSecondIndex) {
-        awaitingPairSecondIndex = false;
-        const idxA = firstIndex;
-        firstIndex = null;
-        openPremiumEditorFor(idxA, resolvedIndex);
-        return;
+      // Any other, unrelated key: resolve a lone pending index now instead of waiting out its timer.
+      if (pendingIndex !== null) {
+        if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+        const idx = pendingIndex;
+        pendingIndex = null;
+        openRateEditorFor(idx);
       }
-
-      // A fresh index with nothing pending — hold it briefly in case a
-      // comma is about to arrive and turn it into a pair.
-      if (firstTimer) clearTimeout(firstTimer);
-      firstIndex = resolvedIndex;
-      firstTimer = setTimeout(fireFirstIndexAlone, PAIR_WAIT_MS);
     });
   }
 
