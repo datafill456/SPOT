@@ -19,7 +19,7 @@
   .ladder-row-broken { stroke: var(--amber, #ffb020); stroke-width: 1; stroke-dasharray: 4 3; }
   .ladder-tenor { font-size: 6px; fill: var(--text, currentColor); }
   .ladder-bigfig { font-size: 4.5px; fill: var(--text-muted, #7c8797); font-family: 'IBM Plex Mono', monospace; font-weight: 400; }
-  .ladder-shortcut-hint { font-size: 4px; fill: var(--accent, #666); font-family: 'IBM Plex Mono', monospace; font-weight: 400; opacity: 0.7; }
+  .ladder-shortcut-hint { font-size: 4.5px; fill: var(--amber, #ffb020); font-family: 'IBM Plex Mono', monospace; font-weight: 700; opacity: 0.95; }
   .ladder-val { font-size: 6.8px; font-weight: 600; }
   .ladder-src-outright { fill: var(--green, #3ba55d); color: var(--green, #3ba55d); font-weight: 700; }
   .ladder-src-created { fill: var(--amber, #ffb020); color: var(--amber, #ffb020); font-weight: 600; }
@@ -164,25 +164,27 @@
     </div>
   </div>
 
-  <div class="card">
-    <h2>Odd / Broken Date <span class="hint">Any custom value date — type a Rate for a real outright, or leave blank to auto-interpolate between the two nearest solved tenors</span></h2>
-    <div style="overflow-x:auto;">
-      <table class="dealer" id="brokenDateTable">
-        <thead><tr><th>Date</th><th>Rate</th><th>Days from Spot</th><th>Payer Rate</th><th>Receiver Rate</th><th></th></tr></thead>
-        <tbody id="brokenDateTableBody"></tbody>
-      </table>
+  <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">
+    <div class="card" style="flex:1 1 340px; min-width:280px; max-width:420px;">
+      <h2>Odd / Broken Date <span class="hint">Any custom value date — type a Rate for a real outright, or leave blank to auto-interpolate between the two nearest solved tenors</span></h2>
+      <div style="overflow-x:auto;">
+        <table class="dealer" id="brokenDateTable">
+          <thead><tr><th>Date</th><th>Rate</th><th>Days from Spot</th><th>Payer Rate</th><th>Receiver Rate</th><th>Premium <span class="hint">pick one tenor — the odd date itself is fixed</span></th><th></th></tr></thead>
+          <tbody id="brokenDateTableBody"></tbody>
+        </table>
+      </div>
+      <div class="btn-row" style="margin-top:10px;">
+        <input type="text" id="newBrokenDateInput" class="cell-input" style="width:120px;" placeholder="DD-MM-YYYY">
+        <button class="btn" id="addBrokenDateBtn">Add Date</button>
+      </div>
     </div>
-    <div class="btn-row" style="margin-top:10px;">
-      <input type="text" id="newBrokenDateInput" class="cell-input" style="width:120px;" placeholder="DD-MM-YYYY">
-      <button class="btn" id="addBrokenDateBtn">Add Date</button>
-    </div>
-  </div>
 
-  <div class="card">
-    <h2>Dealer Quote Screen <span class="hint">green = typed · blue = created via Payer · red = created via Receiver</span></h2>
-    <div id="matchBanner" style="display:none;"></div>
-    <div id="mismatchBanner" style="display:none;"></div>
-    <div id="quoteLadderWrap" style="overflow-x:auto; overflow-y:auto; max-height:96vh; max-width:793px; border:1px solid var(--border); border-radius:8px;"></div>
+    <div class="card" style="flex:2 1 480px;">
+      <h2>Dealer Quote Screen <span class="hint">green = typed · blue = created via Payer · red = created via Receiver</span></h2>
+      <div id="matchBanner" style="display:none;"></div>
+      <div id="mismatchBanner" style="display:none;"></div>
+      <div id="quoteLadderWrap" style="overflow-x:auto; overflow-y:auto; max-height:96vh; max-width:793px; border:1px solid var(--border); border-radius:8px;"></div>
+    </div>
   </div>
 
 
