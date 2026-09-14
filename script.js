@@ -1290,7 +1290,7 @@
       // rest (see wireKeyboardShortcuts). Odd/Broken Date rows have no
       // shortcut of their own, so nothing is shown for those.
       const shortcutIdx = row.kind === 'tenor' ? TENORS.indexOf(t) : -1;
-      const shortcutLabel = shortcutIdx < 0 ? '' : (shortcutIdx < 10 ? String(shortcutIdx) : `a${shortcutIdx - 10}`);
+      const shortcutLabel = shortcutIdx < 0 ? '' : '.' + (shortcutIdx < 10 ? String(shortcutIdx) : `a${shortcutIdx - 10}`);
       const shortcutTag = shortcutLabel ? `<tspan class="ladder-shortcut-hint"> [${shortcutLabel}]</tspan>` : '';
 
       const editRect = showEditable ? `
@@ -1671,11 +1671,28 @@
         const chainPayer = chainNode && isNum(chainNode.payerBid) ? chainNode.payerBid : null;
         const chainReceiver = chainNode && isNum(chainNode.receiverOffer) ? chainNode.receiverOffer : null;
 
+        // A single-tenor "add a premium to this odd date" mini-form — no
+        // need to also pick a second tenor, since the odd date itself is
+        // fixed (it's this exact row); picking one tenor plus a premium
+        // value is enough to connect it into the graph, same as the full
+        // Premium Entries form but skipping the redundant second picker.
+        const premiumMiniForm = `
+          <td>
+            <div style="display:flex; gap:4px; align-items:center;">
+              <select class="cell-input" style="width:64px; padding:4px 2px;" data-broken-prem-tenor="${bd.id}">
+                ${visibleTenors().map((t) => `<option value="${t}">${LABELS[t]}</option>`).join('')}
+              </select>
+              <input type="text" class="cell-input shorthand" style="width:56px;" placeholder="5/5.5" data-broken-prem-value="${bd.id}">
+              <button class="btn" style="padding:3px 6px;" data-broken-prem-add="${bd.id}" title="Add/update this premium">+</button>
+            </div>
+          </td>`;
+
         if (!result && !hasTypedPayer && !hasTypedReceiver && chainPayer === null && chainReceiver === null) {
           tr.innerHTML = `
             ${dateInputCell}
             ${rateInputCell}
             <td colspan="3" class="val-muted">Need at least 2 solved tenors to interpolate, a Premium Entry connecting this date, or type a Rate</td>
+            ${premiumMiniForm}
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
         } else {
@@ -1694,12 +1711,39 @@
             <td class="mono">${daysLabel}</td>
             <td class="mono ${hasTypedPayer ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(payerRate, state.rateDecimals || 2)}${payerTag}</td>
             <td class="mono ${hasTypedReceiver ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(receiverRate, state.rateDecimals || 2)}${receiverTag}</td>
+            ${premiumMiniForm}
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
         }
         tbody.appendChild(tr);
       });
 
+
+    tbody.querySelectorAll('[data-broken-prem-add]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const bdId = Number(btn.dataset.brokenPremAdd);
+        const row = btn.closest('tr');
+        const tenorSel = row ? row.querySelector(`[data-broken-prem-tenor="${bdId}"]`) : null;
+        const valInput = row ? row.querySelector(`[data-broken-prem-value="${bdId}"]`) : null;
+        const tenor = tenorSel ? tenorSel.value : '';
+        const raw = valInput ? valInput.value.trim() : '';
+        if (!tenor || !raw) return;
+        const toNode = `bd:${bdId}`;
+        // Same find-or-update-in-either-direction logic as the ladder's
+        // own click-to-edit premium curves, so re-adding to the same
+        // tenor just updates the existing link instead of duplicating it.
+        let entry = state.premiumEntries.find((pe) => (pe.from === tenor && pe.to === toNode) || (pe.from === toNode && pe.to === tenor));
+        if (entry) {
+          entry.premium = raw;
+        } else {
+          state.premiumEntries.push({ id: nextPremiumId++, from: tenor, to: toNode, premium: raw, perDay: false });
+        }
+        recompute();
+        renderPremiumTable();
+        renderDownstream();
+        scheduleSaveDraft();
+      });
+    });
 
     tbody.querySelectorAll('[data-broken-date-id]').forEach((input) => {
       input.addEventListener('change', () => {
@@ -2011,37 +2055,32 @@
   }
 
   /**
-   * Number-key shortcuts for opening a tenor's Rate editor without
-   * touching the mouse — 0 opens Cash, 1 opens Tom, 2 opens Spot, and so
-   * on down TENOR_ORDER through 9 (4 Months, index 9). Since a bare
-   * digit only covers indices 0–9, the remaining tenors (5M through 12M,
-   * indices 10–17) are reached by pressing "a" followed by a digit —
-   * a0 = index 10 (5M), a1 = index 11 (6M), … a7 = index 17 (12M). The
-   * matching shortcut is also shown right next to each tenor's name on
-   * the ladder itself (in square brackets) as a reminder.
+   * Number-key shortcuts for opening a tenor's Rate editor, or a
+   * Premium editor between two tenors, without touching the mouse — all
+   * resolved immediately, with no waiting/pause, since "." itself
+   * unambiguously signals what's being typed at every step:
    *
-   * Typing two of these one right after another — e.g. "01" or "13" —
-   * opens the PREMIUM editor between those two tenors instead (Cash→Tom,
-   * Tom→1 Week in those two examples), exactly as if that link on the
-   * ladder had been clicked directly. No comma or other separator is
-   * typed; the two index-codes are just typed back to back (this also
-   * works with an "a" one, e.g. "a1a2" for 6 Months→7 Months).
+   *   .0  .1  .2 … .9   — opens that single tenor's Rate editor right
+   *                        away (0=Cash, 1=Tom, 2=Spot, … 9=4 Months).
+   *   .a0 .a1 … .a7      — same, for the tenors past index 9
+   *                        (a0=5 Months … a7=12 Months).
+   *   1.3   3.5   0.1    — a bare index, a dot, then a second index
+   *                        opens the PREMIUM editor between those two
+   *                        tenors (e.g. 1.3 = Tom → 1 Week).
+   *   1.a2  a1.3  a1.a2  — the same pair form, either or both sides
+   *                        using the "aN" form for indices past 9.
    *
-   * A single index only actually opens its Rate editor after a brief
-   * pause with nothing else pressed — just long enough to see whether a
-   * second index is about to follow it and turn it into a pair — so
-   * typing "01" doesn't first flash open Cash's Rate editor before
-   * switching to the Cash→Tom Premium editor.
+   * The matching shortcut for each tenor is shown right next to its
+   * name on the ladder itself (in square brackets) as a reminder.
    *
    * Only active while nothing is already being typed into — an open
    * input, textarea, select, or the ladder's own inline rate/premium
    * editor all suppress this so ordinary typing is never hijacked.
    */
   function wireKeyboardShortcuts() {
-    const PAIR_WAIT_MS = 450; // long enough to catch a following index-code, short enough to still feel instant
-    let awaitingSecondKey = false; // true right after "a" is pressed, waiting for its digit
-    let pendingIndex = null; // one fully-resolved index, waiting to see if a second one follows right after it
-    let pendingTimer = null;
+    let pendingFirstIndex = null; // a bare index typed with no dot yet — held in case "." follows to start a pair
+    let awaitingSecondKey = false; // true right after "a", mid-way through completing ONE index
+    let mode = null; // null | 'single' | 'pairSecond' — what the NEXT completed index should do
 
     function tenorAt(idx) { return TENORS[idx]; }
 
@@ -2096,36 +2135,34 @@
       openLadderPremiumEditor(target, wrap);
     }
 
-    function resetPending() {
-      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
-      pendingIndex = null;
+    function resetAll() {
+      pendingFirstIndex = null;
       awaitingSecondKey = false;
+      mode = null;
     }
 
-    // Call this once a key sequence has resolved into a complete tenor
-    // index (a bare digit, or "a"+digit) — decides whether it's the
-    // first half of a pair, or the second half completing one.
-    function indexResolved(idx) {
-      if (pendingIndex !== null) {
-        if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
-        const first = pendingIndex;
-        pendingIndex = null;
+    // Call this once a key sequence resolves into a complete tenor index
+    // (a bare digit, or "a"+digit) — acts immediately based on `mode`.
+    function indexCompleted(idx) {
+      if (mode === 'single') {
+        openRateEditorFor(idx);
+        resetAll();
+      } else if (mode === 'pairSecond') {
+        const first = pendingFirstIndex;
         openPremiumEditorFor(first, idx);
+        resetAll();
       } else {
-        pendingIndex = idx;
-        pendingTimer = setTimeout(() => {
-          pendingTimer = null;
-          const idxToOpen = pendingIndex;
-          pendingIndex = null;
-          openRateEditorFor(idxToOpen);
-        }, PAIR_WAIT_MS);
+        // No dot has been seen yet — hold this as a possible first half
+        // of a pair. Nothing opens until either "." arrives (confirming
+        // a pair) or some unrelated key arrives (abandoning it).
+        pendingFirstIndex = idx;
       }
     }
 
     document.addEventListener('keydown', (e) => {
       const tag = (e.target && e.target.tagName || '').toLowerCase();
       const isEditing = tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable);
-      if (isEditing) { resetPending(); return; } // an edit box is already open — let normal typing happen
+      if (isEditing) { resetAll(); return; } // an edit box is already open — let normal typing happen
 
       const key = e.key.toLowerCase();
 
@@ -2133,9 +2170,10 @@
         awaitingSecondKey = false;
         if (/^[0-9]$/.test(key)) {
           e.preventDefault();
-          indexResolved(10 + parseInt(key, 10));
+          indexCompleted(10 + parseInt(key, 10));
+        } else {
+          resetAll(); // "a" followed by a non-digit cancels quietly
         }
-        // "a" followed by a non-digit just cancels quietly, leaving any already-pending index alone.
         return;
       }
 
@@ -2145,19 +2183,23 @@
         return;
       }
 
-      if (/^[0-9]$/.test(key)) {
+      if (key === '.') {
         e.preventDefault();
-        indexResolved(parseInt(key, 10));
+        // A leading dot (nothing pending yet) means "open just the next
+        // index, right away". A dot arriving right after a bare index
+        // confirms that index as the first half of a pair instead.
+        mode = pendingFirstIndex === null ? 'single' : 'pairSecond';
         return;
       }
 
-      // Any other, unrelated key: resolve a lone pending index now instead of waiting out its timer.
-      if (pendingIndex !== null) {
-        if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
-        const idx = pendingIndex;
-        pendingIndex = null;
-        openRateEditorFor(idx);
+      if (/^[0-9]$/.test(key)) {
+        e.preventDefault();
+        indexCompleted(parseInt(key, 10));
+        return;
       }
+
+      // Any other, unrelated key: abandon whatever was pending.
+      resetAll();
     });
   }
 
