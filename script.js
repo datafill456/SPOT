@@ -1290,7 +1290,7 @@
       // rest (see wireKeyboardShortcuts). Odd/Broken Date rows have no
       // shortcut of their own, so nothing is shown for those.
       const shortcutIdx = row.kind === 'tenor' ? TENORS.indexOf(t) : -1;
-      const shortcutLabel = shortcutIdx < 0 ? '' : '.' + (shortcutIdx < 10 ? String(shortcutIdx) : `a${shortcutIdx - 10}`);
+      const shortcutLabel = shortcutIdx < 0 ? '' : (shortcutIdx < 10 ? String(shortcutIdx) : String.fromCharCode(97 + (shortcutIdx - 10)));
       const shortcutTag = shortcutLabel ? `<tspan class="ladder-shortcut-hint"> [${shortcutLabel}]</tspan>` : '';
 
       const editRect = showEditable ? `
@@ -2055,34 +2055,42 @@
   }
 
   /**
-   * Number-key shortcuts for opening a tenor's Rate editor, or a
-   * Premium editor between two tenors, without touching the mouse — all
-   * resolved immediately, with no waiting/pause, since "." itself
-   * unambiguously signals what's being typed at every step:
+   * Single-key shortcuts for opening a tenor's Rate editor without
+   * touching the mouse — every tenor gets exactly one character: digits
+   * 0–9 for Cash through 4 Months (index 0–9), then letters a–h for the
+   * rest (5M=a, 6M=b, 7M=c, 8M=d, 9M=e, 10M=f, 11M=g, 12M=h). The
+   * matching shortcut is also shown right next to each tenor's name on
+   * the ladder itself (in square brackets) as a reminder.
    *
-   *   .0  .1  .2 … .9   — opens that single tenor's Rate editor right
-   *                        away (0=Cash, 1=Tom, 2=Spot, … 9=4 Months).
-   *   .a0 .a1 … .a7      — same, for the tenors past index 9
-   *                        (a0=5 Months … a7=12 Months).
-   *   1.3   3.5   0.1    — a bare index, a dot, then a second index
-   *                        opens the PREMIUM editor between those two
-   *                        tenors (e.g. 1.3 = Tom → 1 Week).
-   *   1.a2  a1.3  a1.a2  — the same pair form, either or both sides
-   *                        using the "aN" form for indices past 9.
+   * Typing two of these one right after another — e.g. "13" or "af" —
+   * opens the PREMIUM editor between those two tenors instead (Tom→1
+   * Week, 5 Months→10 Months in those two examples), exactly as if that
+   * link on the ladder had been clicked directly. No separator is
+   * typed; the two shortcut characters are just pressed back to back.
    *
-   * The matching shortcut for each tenor is shown right next to its
-   * name on the ladder itself (in square brackets) as a reminder.
+   * A single shortcut only actually opens its Rate editor after a brief
+   * pause with nothing else pressed — just long enough to see whether a
+   * second one is about to follow it and turn it into a pair — so
+   * typing "13" doesn't first flash open Tom's Rate editor before
+   * switching to the Tom→1 Week Premium editor.
    *
    * Only active while nothing is already being typed into — an open
    * input, textarea, select, or the ladder's own inline rate/premium
    * editor all suppress this so ordinary typing is never hijacked.
    */
   function wireKeyboardShortcuts() {
-    let pendingFirstIndex = null; // a bare index typed with no dot yet — held in case "." follows to start a pair
-    let awaitingSecondKey = false; // true right after "a", mid-way through completing ONE index
-    let mode = null; // null | 'single' | 'pairSecond' — what the NEXT completed index should do
+    const PAIR_WAIT_MS = 450; // long enough to catch a following shortcut character, short enough to still feel instant
+    let pendingIndex = null; // one fully-resolved index, waiting to see if a second one follows right after it
+    let pendingTimer = null;
 
     function tenorAt(idx) { return TENORS[idx]; }
+
+    // "0"–"9" -> 0–9, "a"–"h" -> 10–17, anything else -> null.
+    function keyToIndex(key) {
+      if (/^[0-9]$/.test(key)) return parseInt(key, 10);
+      if (/^[a-h]$/.test(key)) return 10 + (key.charCodeAt(0) - 97);
+      return null;
+    }
 
     function openRateEditorFor(idx) {
       const tenor = tenorAt(idx);
@@ -2135,71 +2143,52 @@
       openLadderPremiumEditor(target, wrap);
     }
 
-    function resetAll() {
-      pendingFirstIndex = null;
-      awaitingSecondKey = false;
-      mode = null;
+    function resetPending() {
+      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+      pendingIndex = null;
     }
 
-    // Call this once a key sequence resolves into a complete tenor index
-    // (a bare digit, or "a"+digit) — acts immediately based on `mode`.
-    function indexCompleted(idx) {
-      if (mode === 'single') {
-        openRateEditorFor(idx);
-        resetAll();
-      } else if (mode === 'pairSecond') {
-        const first = pendingFirstIndex;
+    // Call this once a keypress has resolved into a complete tenor index
+    // — decides whether it's the first half of a pair, or the second
+    // half completing one.
+    function indexResolved(idx) {
+      if (pendingIndex !== null) {
+        if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+        const first = pendingIndex;
+        pendingIndex = null;
         openPremiumEditorFor(first, idx);
-        resetAll();
       } else {
-        // No dot has been seen yet — hold this as a possible first half
-        // of a pair. Nothing opens until either "." arrives (confirming
-        // a pair) or some unrelated key arrives (abandoning it).
-        pendingFirstIndex = idx;
+        pendingIndex = idx;
+        pendingTimer = setTimeout(() => {
+          pendingTimer = null;
+          const idxToOpen = pendingIndex;
+          pendingIndex = null;
+          openRateEditorFor(idxToOpen);
+        }, PAIR_WAIT_MS);
       }
     }
 
     document.addEventListener('keydown', (e) => {
       const tag = (e.target && e.target.tagName || '').toLowerCase();
       const isEditing = tag === 'input' || tag === 'textarea' || tag === 'select' || (e.target && e.target.isContentEditable);
-      if (isEditing) { resetAll(); return; } // an edit box is already open — let normal typing happen
+      if (isEditing) { resetPending(); return; } // an edit box is already open — let normal typing happen
 
       const key = e.key.toLowerCase();
+      const idx = keyToIndex(key);
 
-      if (awaitingSecondKey) {
-        awaitingSecondKey = false;
-        if (/^[0-9]$/.test(key)) {
-          e.preventDefault();
-          indexCompleted(10 + parseInt(key, 10));
-        } else {
-          resetAll(); // "a" followed by a non-digit cancels quietly
-        }
-        return;
-      }
-
-      if (key === 'a') {
-        awaitingSecondKey = true;
+      if (idx !== null) {
         e.preventDefault();
+        indexResolved(idx);
         return;
       }
 
-      if (key === '.') {
-        e.preventDefault();
-        // A leading dot (nothing pending yet) means "open just the next
-        // index, right away". A dot arriving right after a bare index
-        // confirms that index as the first half of a pair instead.
-        mode = pendingFirstIndex === null ? 'single' : 'pairSecond';
-        return;
+      // Any other, unrelated key: resolve a lone pending index now instead of waiting out its timer.
+      if (pendingIndex !== null) {
+        if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+        const pending = pendingIndex;
+        pendingIndex = null;
+        openRateEditorFor(pending);
       }
-
-      if (/^[0-9]$/.test(key)) {
-        e.preventDefault();
-        indexCompleted(parseInt(key, 10));
-        return;
-      }
-
-      // Any other, unrelated key: abandon whatever was pending.
-      resetAll();
     });
   }
 
