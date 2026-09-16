@@ -32,6 +32,25 @@
 
 (function () {
   const TENORS = FXCalculator.TENOR_ORDER;
+
+  /**
+   * Shared "shortcut key" notation used both for the keyboard shortcuts
+   * (wireKeyboardShortcuts) and for the small numbers shown on the
+   * ladder marking which row a created value came from (buildLadderSVG)
+   * — one unified scheme instead of two separate numbering systems.
+   * Index 0-9 map to that same digit; index 10+ map to letters a, b, c…
+   * (10=a, 11=b, … 35=z), which comfortably covers every standard tenor
+   * plus however many Odd/Broken Dates happen to be added.
+   */
+  function shortcutKeyFor(idx) {
+    if (idx < 0) return null;
+    return idx < 10 ? String(idx) : String.fromCharCode(97 + (idx - 10));
+  }
+  function shortcutIndexFor(key) {
+    if (/^[0-9]$/.test(key)) return parseInt(key, 10);
+    if (/^[a-z]$/.test(key)) return 10 + (key.charCodeAt(0) - 97);
+    return null;
+  }
   const LABELS = FXCalculator.TENOR_LABELS;
   const NEAR_DATES = ['cash', 'tom'];
 
@@ -1131,6 +1150,11 @@
     // ever come from another tenor's offer (via Payer-backward or
     // Receiver-forward) — see computeSwapBest.
     const rowKeysAll = rows.map((r) => r.key);
+    // The actual on-screen order — hidden Cash/Tom excluded, Odd/Broken
+    // Dates interleaved chronologically — is what keyboard shortcuts key
+    // off of (see wireKeyboardShortcuts), not the fixed TENOR_ORDER list,
+    // so a shortcut always matches whatever's really showing right now.
+    state.shortcutOrder = rowKeysAll;
     rows.forEach((row) => {
       if (row.kind === 'tenor') {
         const info = autoLinkInfoFor(row.key);
@@ -1141,20 +1165,23 @@
       }
     });
 
-    // Assign each SOURCE tenor a small number (1, 2, 3…), in ladder
-    // order — every row it creates a rate for shows that same number
-    // next to its price, and the source row itself shows the number
-    // next to its tenor name, so matching numbers = matching link.
-    // Shared across bid-links and offer-links: if a tenor is the source
-    // for both, it's still just "one" source and keeps one number.
+    // Assign each SOURCE tenor its own shortcut key (see
+    // shortcutKeyFor/wireKeyboardShortcuts) as its relation number —
+    // every row it creates a rate for shows that same key next to its
+    // price, and the source row itself shows the key next to its tenor
+    // name, so the two numbering schemes are one and the same: the
+    // number you see IS the key you'd press to jump straight to that
+    // source. Shared across bid-links and offer-links: if a tenor is
+    // the source for both, it's still just "one" source and keeps one
+    // key.
     const linkTagNumber = {};
-    let nextLinkTag = 1;
     rows.forEach((row) => {
       if (row.kind !== 'tenor') return;
       [row.bidLink, row.offerLink].forEach((link) => {
         if (!link) return;
-        if (rowKeysAll.indexOf(link.source) === -1 || link.source === row.key) return;
-        if (!linkTagNumber[link.source]) linkTagNumber[link.source] = nextLinkTag++;
+        const srcIdx = rowKeysAll.indexOf(link.source);
+        if (srcIdx === -1 || link.source === row.key) return;
+        if (!linkTagNumber[link.source]) linkTagNumber[link.source] = shortcutKeyFor(srcIdx);
       });
     });
 
@@ -1289,8 +1316,8 @@
       // Rate editor with no mouse at all — 0-9 directly, a0-a7 for the
       // rest (see wireKeyboardShortcuts). Odd/Broken Date rows have no
       // shortcut of their own, so nothing is shown for those.
-      const shortcutIdx = row.kind === 'tenor' ? TENORS.indexOf(t) : -1;
-      const shortcutLabel = shortcutIdx < 0 ? '' : (shortcutIdx < 10 ? String(shortcutIdx) : String.fromCharCode(97 + (shortcutIdx - 10)));
+      const shortcutIdx = rowKeysAll.indexOf(t);
+      const shortcutLabel = shortcutKeyFor(shortcutIdx) || '';
       const shortcutTag = shortcutLabel ? `<tspan class="ladder-shortcut-hint"> [${shortcutLabel}]</tspan>` : '';
 
       const editRect = showEditable ? `
@@ -2055,18 +2082,26 @@
   }
 
   /**
-   * Single-key shortcuts for opening a tenor's Rate editor without
-   * touching the mouse — every tenor gets exactly one character: digits
-   * 0–9 for Cash through 4 Months (index 0–9), then letters a–h for the
-   * rest (5M=a, 6M=b, 7M=c, 8M=d, 9M=e, 10M=f, 11M=g, 12M=h). The
-   * matching shortcut is also shown right next to each tenor's name on
-   * the ladder itself (in square brackets) as a reminder.
+   * Single-key shortcuts for opening a tenor's Rate editor, or an Odd
+   * Date's Premium editor as part of a pair, without touching the
+   * mouse. Every row gets exactly one character based on its ACTUAL
+   * on-screen position right now — not a fixed list — so a hidden
+   * Cash/Tom (a US holiday) is skipped, and any Odd/Broken Dates you've
+   * added slot in wherever they chronologically fall, shifting
+   * everything after them: digits 0–9 for the first ten rows, then
+   * letters a, b, c… for the rest (10=a, 11=b, … up to z). The matching
+   * shortcut for every row is shown right next to its name on the
+   * ladder itself (in square brackets), and doubles as the small number
+   * shown elsewhere marking which row a created value came from — one
+   * unified notation for both.
    *
    * Typing two of these one right after another — e.g. "13" or "af" —
-   * opens the PREMIUM editor between those two tenors instead (Tom→1
-   * Week, 5 Months→10 Months in those two examples), exactly as if that
-   * link on the ladder had been clicked directly. No separator is
-   * typed; the two shortcut characters are just pressed back to back.
+   * opens the PREMIUM editor between those two rows instead, exactly as
+   * if that link on the ladder had been clicked directly. No separator
+   * is typed; the two shortcut characters are just pressed back to
+   * back. (An Odd Date row has no Rate editor of its own reachable this
+   * way — it's edited directly in the Odd/Broken Date table — but it can
+   * still be one half of a Premium pair.)
    *
    * A single shortcut only actually opens its Rate editor after a brief
    * pause with nothing else pressed — just long enough to see whether a
@@ -2083,14 +2118,7 @@
     let pendingIndex = null; // one fully-resolved index, waiting to see if a second one follows right after it
     let pendingTimer = null;
 
-    function tenorAt(idx) { return TENORS[idx]; }
-
-    // "0"–"9" -> 0–9, "a"–"h" -> 10–17, anything else -> null.
-    function keyToIndex(key) {
-      if (/^[0-9]$/.test(key)) return parseInt(key, 10);
-      if (/^[a-h]$/.test(key)) return 10 + (key.charCodeAt(0) - 97);
-      return null;
-    }
+    function tenorAt(idx) { return (state.shortcutOrder || TENORS)[idx]; }
 
     function openRateEditorFor(idx) {
       const tenor = tenorAt(idx);
@@ -2174,7 +2202,7 @@
       if (isEditing) { resetPending(); return; } // an edit box is already open — let normal typing happen
 
       const key = e.key.toLowerCase();
-      const idx = keyToIndex(key);
+      const idx = shortcutIndexFor(key);
 
       if (idx !== null) {
         e.preventDefault();
