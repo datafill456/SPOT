@@ -43,6 +43,40 @@ const SL_HOLIDAYS_2026 = [
 ];
 
 /**
+ * 2027 continuation of the same list — a 9-12 Month tenor quoted any
+ * time from around mid-2026 onward matures in 2027, so this needs to
+ * exist for those tenors' date math (and holiday checks generally) to
+ * be correct, not just for anything literally dated in 2027.
+ */
+const SL_HOLIDAYS_2027 = [
+  '2027-01-15',
+  '2027-01-22',
+  '2027-02-04',
+  '2027-02-20',
+  '2027-03-06',
+  '2027-03-10',
+  '2027-03-22',
+  '2027-03-26',
+  '2027-04-13',
+  '2027-04-14',
+  '2027-04-20',
+  '2027-05-01',
+  '2027-05-17',
+  '2027-05-19',
+  '2027-05-20',
+  '2027-06-18',
+  '2027-07-18',
+  '2027-08-15',
+  '2027-08-16',
+  '2027-09-15',
+  '2027-10-15',
+  '2027-10-28',
+  '2027-11-13',
+  '2027-12-13',
+  '2027-12-25',
+];
+
+/**
  * Optional friendly names, keyed the same way, purely for tooltips.
  */
 const SL_HOLIDAY_NAMES_2026 = {
@@ -94,6 +128,19 @@ const US_HOLIDAYS_2026 = [
   '2026-12-25', // Christmas Day
 ];
 
+/** 2027 continuation — see the note above SL_HOLIDAYS_2027 for why this matters even for tenors that don't literally land in 2027 today. */
+const US_HOLIDAYS_2027 = [
+  '2027-01-01',
+  '2027-01-18',
+  '2027-02-15',
+  '2027-05-31',
+  '2027-07-05',
+  '2027-09-06',
+  '2027-10-11',
+  '2027-11-11',
+  '2027-11-25',
+];
+
 const FXCalendar = (function () {
   // Live-editable holiday set, backed by localStorage so users can add
   // ad-hoc bank holidays without touching code.
@@ -103,14 +150,14 @@ const FXCalendar = (function () {
     try {
       const custom = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (custom && Array.isArray(custom)) {
-        return new Set([...SL_HOLIDAYS_2026, ...custom]);
+        return new Set([...SL_HOLIDAYS_2026, ...SL_HOLIDAYS_2027, ...custom]);
       }
     } catch (e) { /* ignore corrupt storage */ }
-    return new Set(SL_HOLIDAYS_2026);
+    return new Set([...SL_HOLIDAYS_2026, ...SL_HOLIDAYS_2027]);
   }
 
   let holidaySet = loadHolidaySet();
-  const usHolidaySet = new Set(US_HOLIDAYS_2026);
+  const usHolidaySet = new Set([...US_HOLIDAYS_2026, ...US_HOLIDAYS_2027]);
 
   function fmt(date) {
     const y = date.getFullYear();
