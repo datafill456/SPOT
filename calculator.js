@@ -40,9 +40,9 @@
    ============================================================ */
 
 const FXCalculator = (function () {
-  const TENOR_ORDER = ['cash', 'tom', 'spot', '1W', '2W', '3W', '1M', '2M', '3M', '4M', '5M', '6M', '7M', '8M', '9M', '10M', '11M', '12M'];
+  const TENOR_ORDER = ['cash', 'tom', 'spot', 'sn', 'snn', '1W', '2W', '3W', '1M', '2M', '3M', '4M', '5M', '6M', '7M', '8M', '9M', '10M', '11M', '12M'];
   const TENOR_LABELS = {
-    cash: 'Cash', tom: 'Tom', spot: 'Spot',
+    cash: 'Cash', tom: 'Tom', spot: 'Spot', sn: 'SN', snn: 'SNN',
     '1W': '1 Week', '2W': '2 Weeks', '3W': '3 Weeks',
     '1M': '1 Month', '2M': '2 Months', '3M': '3 Months', '4M': '4 Months',
     '5M': '5 Months', '6M': '6 Months', '7M': '7 Months', '8M': '8 Months',
@@ -78,6 +78,10 @@ const FXCalculator = (function () {
    * SPOT (and everything built off it) is always `anchor` + 2 mutual
    * (SL+US) working days, computed the same way regardless of whether
    * Cash or Tom ended up hidden.
+   *
+   * SN (Spot Next) and SNN are the first and second mutual working days
+   * after Spot — no separate hidden-day handling for these, they just
+   * roll forward through weekends/holidays like any other forward date.
    *
    * A normal working day, with no US holiday sitting in either the Cash
    * or Tom slot, is completely unaffected — same dates as always.
@@ -122,7 +126,14 @@ const FXCalculator = (function () {
     // anchor — unaffected by whether Cash or Tom ended up hidden.
     const spot = cal.addWorkingDays(anchor, 2);
 
-    const dates = { cash, tom, spot };
+    // SN (Spot Next) and SNN — the first and second mutual working days
+    // AFTER Spot. Same convention as Spot itself: no separate "hidden"
+    // concept for these, they simply roll forward through weekends and
+    // holidays on either side like any other forward date does.
+    const sn = cal.addWorkingDays(spot, 1);
+    const snn = cal.addWorkingDays(spot, 2);
+
+    const dates = { cash, tom, spot, sn, snn };
     dates['1W'] = cal.addTenorWeeks(spot, 1);
     dates['2W'] = cal.addTenorWeeks(spot, 2);
     dates['3W'] = cal.addTenorWeeks(spot, 3);
@@ -168,9 +179,10 @@ const FXCalculator = (function () {
    * anchorList: [{ node, value }]        value = actual outright rate
    * Returns: { relFromSpot: {node: number|null}, absolute: {node: number|null} }
    */
-  function solveSideGraph(edgeList, anchorList) {
+  function solveSideGraph(edgeList, anchorList, nodeList) {
+    const nodes = nodeList || TENOR_ORDER;
     const adj = {};
-    TENOR_ORDER.forEach((n) => { adj[n] = []; });
+    nodes.forEach((n) => { adj[n] = []; });
     edgeList.forEach(({ from, to, value }) => {
       if (!isNum(value) || !adj[from] || !adj[to]) return;
       adj[from].push({ to, w: value });
@@ -184,7 +196,7 @@ const FXCalculator = (function () {
     const componentOf = {};
     let compId = 0;
 
-    TENOR_ORDER.forEach((start) => {
+    nodes.forEach((start) => {
       if (visited[start]) return;
       compId += 1;
       visited[start] = true;
@@ -207,13 +219,13 @@ const FXCalculator = (function () {
     // Relative-to-Spot: only meaningful for nodes in Spot's component.
     const spotComp = componentOf.spot;
     const relFromSpot = {};
-    TENOR_ORDER.forEach((n) => {
+    nodes.forEach((n) => {
       relFromSpot[n] = componentOf[n] === spotComp ? relFromRoot[n] - relFromRoot.spot : null;
     });
 
     // Absolute rates: shift each component that contains an anchor.
     const absolute = {};
-    TENOR_ORDER.forEach((n) => { absolute[n] = null; });
+    nodes.forEach((n) => { absolute[n] = null; });
     const anchorByComponent = {};
     anchorList.forEach(({ node, value }) => {
       if (!isNum(value) || !(node in componentOf)) return;
@@ -223,7 +235,7 @@ const FXCalculator = (function () {
     Object.keys(anchorByComponent).forEach((comp) => {
       const anchor = anchorByComponent[comp];
       const base = anchor.value - relFromRoot[anchor.node];
-      TENOR_ORDER.forEach((n) => {
+      nodes.forEach((n) => {
         if (componentOf[n] === Number(comp)) absolute[n] = base + relFromRoot[n];
       });
     });
@@ -243,7 +255,9 @@ const FXCalculator = (function () {
    * So every tenor gets FOUR numbers: payerBid, payerOffer, receiverBid,
    * receiverOffer — the same relative premium chain, anchored twice.
    */
-  function solveMarket(edges, anchors, valueDates) {
+  function solveMarket(edges, anchors, valueDates, extraNodes) {
+    const extras = extraNodes || []; // [{ key, date, label }] — e.g. Odd/Broken Dates, once a Premium Entry or their own typed Rate connects them into the graph
+    const nodeList = TENOR_ORDER.concat(extras.map((n) => n.key));
     const days = valueDates.days;
 
     const payerEdges = edges.map((e) => ({ from: e.from, to: e.to, value: e.payer }));
@@ -251,14 +265,24 @@ const FXCalculator = (function () {
     const bidAnchors = anchors.map((a) => ({ node: a.node, value: a.bid }));
     const offerAnchors = anchors.map((a) => ({ node: a.node, value: a.offer }));
 
-    const payerBidSolve = solveSideGraph(payerEdges, bidAnchors);
-    const payerOfferSolve = solveSideGraph(payerEdges, offerAnchors);
-    const receiverBidSolve = solveSideGraph(receiverEdges, bidAnchors);
-    const receiverOfferSolve = solveSideGraph(receiverEdges, offerAnchors);
+    const payerBidSolve = solveSideGraph(payerEdges, bidAnchors, nodeList);
+    const payerOfferSolve = solveSideGraph(payerEdges, offerAnchors, nodeList);
+    const receiverBidSolve = solveSideGraph(receiverEdges, bidAnchors, nodeList);
+    const receiverOfferSolve = solveSideGraph(receiverEdges, offerAnchors, nodeList);
+
+    const extraByKey = {};
+    extras.forEach((n) => { extraByKey[n.key] = n; });
+    const dayCountFor = (key) => {
+      if (key in days) return days[key];
+      const n = extraByKey[key];
+      return n ? FXCalendar.calendarDaysBetween(valueDates.spot, n.date) : null;
+    };
+    const labelFor = (key) => TENOR_LABELS[key] || (extraByKey[key] ? extraByKey[key].label : key);
+    const dateFor = (key) => valueDates.dates[key] || (extraByKey[key] ? extraByKey[key].date : null);
 
     const curve = {};
-    TENOR_ORDER.forEach((t) => {
-      const d = days[t];
+    nodeList.forEach((t) => {
+      const d = dayCountFor(t);
       const payerPremium = payerBidSolve.relFromSpot[t];
       const receiverPremium = receiverBidSolve.relFromSpot[t];
 
@@ -268,8 +292,8 @@ const FXCalculator = (function () {
       const receiverOffer = receiverOfferSolve.absolute[t];
 
       curve[t] = {
-        label: TENOR_LABELS[t],
-        date: valueDates.dates[t],
+        label: labelFor(t),
+        date: dateFor(t),
         daysFromSpot: d,
         payerBid,
         payerOffer,
