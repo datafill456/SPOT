@@ -173,7 +173,7 @@
   const TYPICAL_PTS_PER_DAY = 5.5;
   function estimateBigFigureForTenor(tenor, baseBF, days) {
     if (!isFinite(baseBF)) return baseBF;
-    if (tenor === 'spot' || tenor === 'sn' || tenor === 'snn' || NEAR_DATES.includes(tenor)) return baseBF;
+    if (tenor === 'spot' || NEAR_DATES.includes(tenor)) return baseBF;
     const d = days[tenor] || 0;
     const estimatedPts = TYPICAL_PTS_PER_DAY * d;
     const rollover = Math.floor(estimatedPts / 100);
@@ -340,7 +340,7 @@
     // its own explicit override — that's the dealer overruling both
     // guesses on purpose, so it's never auto-corrected back.
     const anchors = guesses.map((g) => {
-      if (g.hasOverride || g.node === 'spot' || g.node === 'sn' || g.node === 'snn' || NEAR_DATES.includes(g.node) || !spotGuess) return g;
+      if (g.hasOverride || g.node === 'spot' || NEAR_DATES.includes(g.node) || !spotGuess) return g;
       const provRow = provisional.curve[g.node];
       const premRel = isNum(provRow.payerPremium) ? provRow.payerPremium : provRow.receiverPremium;
       if (!isNum(premRel)) return g; // no better info yet — keep the heuristic guess
