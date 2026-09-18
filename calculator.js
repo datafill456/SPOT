@@ -40,9 +40,9 @@
    ============================================================ */
 
 const FXCalculator = (function () {
-  const TENOR_ORDER = ['cash', 'tom', 'spot', 'sn', 'snn', '1W', '2W', '3W', '1M', '2M', '3M', '4M', '5M', '6M', '7M', '8M', '9M', '10M', '11M', '12M'];
+  const TENOR_ORDER = ['cash', 'tom', 'spot', '1W', '2W', '3W', '1M', '2M', '3M', '4M', '5M', '6M', '7M', '8M', '9M', '10M', '11M', '12M'];
   const TENOR_LABELS = {
-    cash: 'Cash', tom: 'Tom', spot: 'Spot', sn: 'SN', snn: 'SNN',
+    cash: 'Cash', tom: 'Tom', spot: 'Spot',
     '1W': '1 Week', '2W': '2 Weeks', '3W': '3 Weeks',
     '1M': '1 Month', '2M': '2 Months', '3M': '3 Months', '4M': '4 Months',
     '5M': '5 Months', '6M': '6 Months', '7M': '7 Months', '8M': '8 Months',
@@ -53,35 +53,23 @@ const FXCalculator = (function () {
    * Build the full value-date ladder from today's trade date.
    *
    * Cash (same-day) and Tom (next-day) both need the US side open to be
-   * real settleable USD value dates — not just Sri Lanka. Sri Lanka's OWN
-   * calendar decides what day "today" and "the next SL business day" are
-   * (weekends/SL holidays rolled forward as always); the US calendar is
-   * only ever consulted afterwards to check whether that specific day can
-   * actually settle a USD trade. Cash, Tom and Spot are each computed
-   * independently, straight off that one SL-side anchor — a hidden Cash
-   * never changes how Tom or Spot are calculated, and a hidden Tom never
-   * pulls Spot back to fill its slot; that calendar day is simply not
-   * shown by anything.
+   * real settleable USD value dates — not just Sri Lanka.
    *
-   * CASH: if the anchor day itself is a "pure" US holiday (Sri Lanka
-   * open, US closed — e.g. Labor Day, Thanksgiving), there simply is no
-   * Cash value date today, so it's dropped from the ladder entirely
-   * (`cashHidden: true`, `cash: null`).
+   * CASH: a day that's a US holiday but otherwise a normal Sri Lankan
+   * working day (e.g. Labor Day, Thanksgiving) isn't "Cash rolls forward
+   * to the next day" like a normal SL holiday/weekend gap would be;
+   * there simply IS no Cash value date today, so it's dropped from the
+   * ladder entirely (`cashHidden: true`, `cash: null`) and everything
+   * else builds off the previous day that was a genuine working day on
+   * BOTH sides (`referenceDate`) instead of from today.
    *
-   * TOM: the calendar day immediately after the anchor that Sri Lanka
-   * itself would treat as the next business day — found the exact same
-   * way the anchor itself is (weekend and SL-holiday rolled past). If
-   * THAT specific day is a pure US holiday, Tom can't exist there either
-   * (`tomHidden: true`, `tom: null`) — nothing else moves to take its
-   * place.
-   *
-   * SPOT (and everything built off it) is always `anchor` + 2 mutual
-   * (SL+US) working days, computed the same way regardless of whether
-   * Cash or Tom ended up hidden.
-   *
-   * SN (Spot Next) and SNN are the first and second mutual working days
-   * after Spot — no separate hidden-day handling for these, they just
-   * roll forward through weekends/holidays like any other forward date.
+   * TOM: same idea, one slot over — the calendar day immediately after
+   * Cash/referenceDate that Sri Lanka itself would treat as the next
+   * business day. If THAT specific day is a pure US holiday, Tom can't
+   * exist there either (`tomHidden: true`, `tom: null`) — and instead of
+   * pushing Spot a further hop out past it, Spot collapses back to take
+   * that same slot (the next day genuinely open on both sides), exactly
+   * where Tom would otherwise have landed.
    *
    * A normal working day, with no US holiday sitting in either the Cash
    * or Tom slot, is completely unaffected — same dates as always.
@@ -97,43 +85,41 @@ const FXCalculator = (function () {
     // have.
     const isPureUSHoliday = (d) => cal.isUSHoliday(d) && !cal.isWeekend(d) && !cal.isHoliday(d);
 
-    // Sri Lanka's own working-day test, ignoring the US calendar entirely
-    // — used only to find "today"/"the next SL business day".
-    const isSLWorkingDay = (d) => !cal.isWeekend(d) && !cal.isHoliday(d);
-    const rollSLFollowing = (d) => {
-      let x = new Date(d);
-      while (!isSLWorkingDay(x)) x = cal.addDays(x, 1);
-      return x;
-    };
+    let cash = null;
+    const cashHidden = isPureUSHoliday(tradeDate);
+    let referenceDate;
 
-    // anchor = the next Sri Lanka business day (weekend/SL-holiday
-    // rolled forward, US calendar not consulted) — Cash, Tom and Spot
-    // are all computed directly from this one day.
-    const anchor = rollSLFollowing(tradeDate);
-    const referenceDate = anchor;
-
-    const cashHidden = isPureUSHoliday(anchor);
-    const cash = cashHidden ? null : new Date(anchor);
+    if (cashHidden) {
+      referenceDate = cal.previousWorkingDay(tradeDate);
+    } else {
+      cash = cal.isWorkingDay(tradeDate) ? new Date(tradeDate) : cal.rollFollowing(tradeDate);
+      referenceDate = cash;
+    }
 
     // The "natural" T+1 slot: the very next day Sri Lanka itself would
-    // treat as a business day — same rule as the anchor itself (weekend
-    // AND SL-holiday rolled past), before even considering the US side.
-    const candidateTom = rollSLFollowing(cal.addDays(anchor, 1));
+    // call a business day (weekend/SL-holiday skipped), before even
+    // considering whether the US is open that day.
+    let candidateTom = cal.addDays(referenceDate, 1);
+    while (cal.isWeekend(candidateTom) || cal.isHoliday(candidateTom)) {
+      candidateTom = cal.addDays(candidateTom, 1);
+    }
+    // candidateTom is already guaranteed SL-open, so a US holiday there
+    // is necessarily a "pure" one.
     const tomHidden = cal.isUSHoliday(candidateTom);
-    const tom = tomHidden ? null : cal.addWorkingDays(anchor, 1);
 
-    // Spot is always the second mutual (SL+US) working day after the
-    // anchor — unaffected by whether Cash or Tom ended up hidden.
-    const spot = cal.addWorkingDays(anchor, 2);
+    let tom, spot;
+    if (tomHidden) {
+      tom = null;
+      // Skips straight past the US-holiday slot to the next day open on
+      // both sides — the same date Tom would have landed on under the
+      // old roll-forward behavior, now claimed by Spot instead.
+      spot = cal.addWorkingDays(referenceDate, 1);
+    } else {
+      tom = candidateTom;
+      spot = cal.addWorkingDays(referenceDate, 2);
+    }
 
-    // SN (Spot Next) and SNN — the first and second mutual working days
-    // AFTER Spot. Same convention as Spot itself: no separate "hidden"
-    // concept for these, they simply roll forward through weekends and
-    // holidays on either side like any other forward date does.
-    const sn = cal.addWorkingDays(spot, 1);
-    const snn = cal.addWorkingDays(spot, 2);
-
-    const dates = { cash, tom, spot, sn, snn };
+    const dates = { cash, tom, spot };
     dates['1W'] = cal.addTenorWeeks(spot, 1);
     dates['2W'] = cal.addTenorWeeks(spot, 2);
     dates['3W'] = cal.addTenorWeeks(spot, 3);
@@ -179,10 +165,9 @@ const FXCalculator = (function () {
    * anchorList: [{ node, value }]        value = actual outright rate
    * Returns: { relFromSpot: {node: number|null}, absolute: {node: number|null} }
    */
-  function solveSideGraph(edgeList, anchorList, nodeList) {
-    const nodes = nodeList || TENOR_ORDER;
+  function solveSideGraph(edgeList, anchorList) {
     const adj = {};
-    nodes.forEach((n) => { adj[n] = []; });
+    TENOR_ORDER.forEach((n) => { adj[n] = []; });
     edgeList.forEach(({ from, to, value }) => {
       if (!isNum(value) || !adj[from] || !adj[to]) return;
       adj[from].push({ to, w: value });
@@ -196,7 +181,7 @@ const FXCalculator = (function () {
     const componentOf = {};
     let compId = 0;
 
-    nodes.forEach((start) => {
+    TENOR_ORDER.forEach((start) => {
       if (visited[start]) return;
       compId += 1;
       visited[start] = true;
@@ -219,13 +204,13 @@ const FXCalculator = (function () {
     // Relative-to-Spot: only meaningful for nodes in Spot's component.
     const spotComp = componentOf.spot;
     const relFromSpot = {};
-    nodes.forEach((n) => {
+    TENOR_ORDER.forEach((n) => {
       relFromSpot[n] = componentOf[n] === spotComp ? relFromRoot[n] - relFromRoot.spot : null;
     });
 
     // Absolute rates: shift each component that contains an anchor.
     const absolute = {};
-    nodes.forEach((n) => { absolute[n] = null; });
+    TENOR_ORDER.forEach((n) => { absolute[n] = null; });
     const anchorByComponent = {};
     anchorList.forEach(({ node, value }) => {
       if (!isNum(value) || !(node in componentOf)) return;
@@ -235,7 +220,7 @@ const FXCalculator = (function () {
     Object.keys(anchorByComponent).forEach((comp) => {
       const anchor = anchorByComponent[comp];
       const base = anchor.value - relFromRoot[anchor.node];
-      nodes.forEach((n) => {
+      TENOR_ORDER.forEach((n) => {
         if (componentOf[n] === Number(comp)) absolute[n] = base + relFromRoot[n];
       });
     });
@@ -255,9 +240,7 @@ const FXCalculator = (function () {
    * So every tenor gets FOUR numbers: payerBid, payerOffer, receiverBid,
    * receiverOffer — the same relative premium chain, anchored twice.
    */
-  function solveMarket(edges, anchors, valueDates, extraNodes) {
-    const extras = extraNodes || []; // [{ key, date, label }] — e.g. Odd/Broken Dates, once a Premium Entry or their own typed Rate connects them into the graph
-    const nodeList = TENOR_ORDER.concat(extras.map((n) => n.key));
+  function solveMarket(edges, anchors, valueDates) {
     const days = valueDates.days;
 
     const payerEdges = edges.map((e) => ({ from: e.from, to: e.to, value: e.payer }));
@@ -265,24 +248,14 @@ const FXCalculator = (function () {
     const bidAnchors = anchors.map((a) => ({ node: a.node, value: a.bid }));
     const offerAnchors = anchors.map((a) => ({ node: a.node, value: a.offer }));
 
-    const payerBidSolve = solveSideGraph(payerEdges, bidAnchors, nodeList);
-    const payerOfferSolve = solveSideGraph(payerEdges, offerAnchors, nodeList);
-    const receiverBidSolve = solveSideGraph(receiverEdges, bidAnchors, nodeList);
-    const receiverOfferSolve = solveSideGraph(receiverEdges, offerAnchors, nodeList);
-
-    const extraByKey = {};
-    extras.forEach((n) => { extraByKey[n.key] = n; });
-    const dayCountFor = (key) => {
-      if (key in days) return days[key];
-      const n = extraByKey[key];
-      return n ? FXCalendar.calendarDaysBetween(valueDates.spot, n.date) : null;
-    };
-    const labelFor = (key) => TENOR_LABELS[key] || (extraByKey[key] ? extraByKey[key].label : key);
-    const dateFor = (key) => valueDates.dates[key] || (extraByKey[key] ? extraByKey[key].date : null);
+    const payerBidSolve = solveSideGraph(payerEdges, bidAnchors);
+    const payerOfferSolve = solveSideGraph(payerEdges, offerAnchors);
+    const receiverBidSolve = solveSideGraph(receiverEdges, bidAnchors);
+    const receiverOfferSolve = solveSideGraph(receiverEdges, offerAnchors);
 
     const curve = {};
-    nodeList.forEach((t) => {
-      const d = dayCountFor(t);
+    TENOR_ORDER.forEach((t) => {
+      const d = days[t];
       const payerPremium = payerBidSolve.relFromSpot[t];
       const receiverPremium = receiverBidSolve.relFromSpot[t];
 
@@ -292,8 +265,8 @@ const FXCalculator = (function () {
       const receiverOffer = receiverOfferSolve.absolute[t];
 
       curve[t] = {
-        label: labelFor(t),
-        date: dateFor(t),
+        label: TENOR_LABELS[t],
+        date: valueDates.dates[t],
         daysFromSpot: d,
         payerBid,
         payerOffer,
