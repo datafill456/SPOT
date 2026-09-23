@@ -214,6 +214,22 @@
     return { bid: bidRaw, offer: offerRaw };
   }
 
+  /**
+   * What actually gets fed to parseRateShorthand for a given Rate Entry.
+   * Normally that's just the dealer's own typed text — except Spot with
+   * nothing typed yet AND a real Big Figure in play: there, an empty box
+   * is treated as "0/0" so a typed Big Figure alone is enough to anchor
+   * Spot at that whole number with .00 points, exactly as if "0/0" had
+   * been typed. Without a valid Big Figure this changes nothing — a
+   * blank Spot box stays a blank (no anchor), same as always. The moment
+   * the dealer types real points into Spot's Rate box, this stops
+   * applying — their typed text always wins.
+   */
+  function effectiveRateStrFor(re, bfGuess) {
+    if (re.node === 'spot' && (!re.rate || !re.rate.trim()) && isFinite(bfGuess)) return '0/0';
+    return re.rate;
+  }
+
   /** "5/5.5" -> {payer:5, receiver:5.5}, literal (no big-figure scaling). A single value with NO slash means only a Payer premium was actually quoted — it is NOT duplicated onto Receiver. */
   function parsePremiumShorthand(str) {
     const empty = { payer: null, receiver: null };
@@ -251,6 +267,15 @@
     const hasValueDate = (t) => !!nodeDate(t);
     state.rateEntries = state.rateEntries.filter((re) => hasValueDate(re.node));
     state.premiumEntries = state.premiumEntries.filter((pe) => hasValueDate(pe.from) && hasValueDate(pe.to));
+
+    // Typing a Big Figure with no Spot Rate Entry yet means the dealer
+    // wants Spot itself anchored right there — auto-create that entry
+    // (blank rate, so it defaults to that Big Figure with .00 points,
+    // see the "effective rate string" below) so it shows up in the Rate
+    // Entries table too and can be typed over normally from then on.
+    if (isFinite(parseFloat(state.bigFigure)) && !state.rateEntries.some((re) => re.node === 'spot')) {
+      state.rateEntries.push({ id: nextRateId++, node: 'spot', rate: '' });
+    }
 
     // Manual correction for any tenor whose computed date is wrong (a
     // missing holiday, an edge case in the roll convention, etc.) —
@@ -325,7 +350,7 @@
         }
       }
 
-      const r = parseRateShorthand(re.rate, bfGuess);
+      const r = parseRateShorthand(effectiveRateStrFor(re, bfGuess), bfGuess);
       return { node: re.node, rateStr: re.rate, bid: r.bid, offer: r.offer, hasOverride };
     });
     const provisionalAnchors = guesses.filter((g) => g.bid !== null || g.offer !== null);
