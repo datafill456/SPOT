@@ -1669,6 +1669,39 @@
   /* ==================================================================
      RENDER: Odd / Broken Dates (custom value dates, interpolated)
      ================================================================== */
+
+  /**
+   * Shared by the "Add Date" button and the calendar date picker: adds a
+   * new Odd/Broken Date entry for the given ISO date (or, if that exact
+   * date is already in the list, just reuses the existing row instead of
+   * duplicating it), then jumps straight to its Rate input — scrolled
+   * into view and focused — so picking a date from the calendar is the
+   * whole interaction; the very next keystroke is the rate itself.
+   */
+  function addOrFocusBrokenDate(iso) {
+    let entry = state.brokenDates.find((bd) => bd.dateStr === iso);
+    if (!entry) {
+      entry = { id: nextBrokenDateId++, dateStr: iso, rate: '' };
+      state.brokenDates.push(entry);
+      // recompute() + renderDownstream() (which refreshes the Premium
+      // Entries dropdowns via refreshTenorSelects) is what makes this new
+      // Odd Date immediately pickable as a Tenor 1 / Tenor 2 there.
+      recompute();
+      renderPremiumTable();
+      renderDownstream();
+      scheduleSaveDraft();
+    }
+    // Wait a frame so the table above has actually finished re-rendering
+    // (renderBrokenDates() just rebuilt brokenDateTableBody) before
+    // looking for the row to scroll to.
+    requestAnimationFrame(() => {
+      const rateInput = document.querySelector(`[data-broken-rate-id="${entry.id}"]`);
+      if (!rateInput) return;
+      rateInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => rateInput.focus(), 250); // let the smooth scroll settle first
+    });
+  }
+
   function renderBrokenDates() {
     const tbody = document.getElementById('brokenDateTableBody');
     if (!tbody) return;
@@ -1962,16 +1995,23 @@
       if (!input.value.trim()) { alert('Type a date first, e.g. 15-09-2026.'); return; }
       const iso = parseFlexibleDateToISO(input.value);
       if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); return; }
-      state.brokenDates.push({ id: nextBrokenDateId++, dateStr: iso, rate: '' });
       input.value = '';
-      // recompute() + renderDownstream() (which refreshes the Premium
-      // Entries dropdowns via refreshTenorSelects) is what makes this new
-      // Odd Date immediately pickable as a Tenor 1 / Tenor 2 there.
-      recompute();
-      renderPremiumTable();
-      renderDownstream();
-      scheduleSaveDraft();
+      addOrFocusBrokenDate(iso);
     });
+
+    // Calendar picker: the browser's own date-picker UI (a real clickable
+    // calendar grid, no typing needed at all) — its value is already
+    // 'YYYY-MM-DD', i.e. already the ISO format this app uses internally,
+    // so it goes straight to addOrFocusBrokenDate with no parsing step.
+    const newBrokenDatePicker = document.getElementById('newBrokenDatePicker');
+    if (newBrokenDatePicker) {
+      newBrokenDatePicker.addEventListener('change', () => {
+        const iso = newBrokenDatePicker.value;
+        if (!iso) return;
+        addOrFocusBrokenDate(iso);
+        newBrokenDatePicker.value = '';
+      });
+    }
 
     document.getElementById('clearInputsBtn').addEventListener('click', () => {
       if (!confirm('Clear every input field?')) return;
