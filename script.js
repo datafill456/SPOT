@@ -1074,6 +1074,105 @@
     return fmtTrim((offerVal - bidVal) * 100);
   }
 
+  /**
+   * What a Payer and a Receiver would actually experience doing a swap
+   * between two tenors, using the outright Bid/Offer showing on the ladder
+   * for each (typed, or created by the premium chain) — shared by the
+   * click-to-reveal "ⓘ" panel and the hover tooltip between near-related
+   * (adjacent) rows.
+   *
+   *   Payer    = sells NOW at the near tenor's BID, buys FORWARD at the
+   *              far tenor's OFFER      -> farOffer - nearBid
+   *   Receiver = buys NOW at the near tenor's OFFER, sells FORWARD at the
+   *              far tenor's BID        -> farBid - nearOffer
+   *
+   * Each side only resolves if the two specific outright prices it needs
+   * exist — e.g. Spot Offer + 1M Bid gives the Receiver figure, while the
+   * Payer figure stays blank until Spot's Bid and 1M's Offer are there
+   * too. Also returns the total points, the calendar days between the two
+   * tenors, the points-per-day, and the exact rates used, so the dealer
+   * can see what each figure was matched against.
+   */
+  function computeRelationNumbers(keyA, keyB) {
+    const bestA = state.swapBest && state.swapBest[keyA];
+    const bestB = state.swapBest && state.swapBest[keyB];
+    const curve = state.solved.curve;
+    const ca = curve[keyA];
+    const cb = curve[keyB];
+    const bidA = bestA && isNum(bestA.bid.val) ? bestA.bid.val : (ca && ca.payerBid);
+    const bidB = bestB && isNum(bestB.bid.val) ? bestB.bid.val : (cb && cb.payerBid);
+    const offerA = bestA && isNum(bestA.offer.val) ? bestA.offer.val : (ca && ca.receiverOffer);
+    const offerB = bestB && isNum(bestB.offer.val) ? bestB.offer.val : (cb && cb.receiverOffer);
+
+    const dateA = nodeDate(keyA);
+    const dateB = nodeDate(keyB);
+    const days = (dateA && dateB) ? FXCalendar.calendarDaysBetween(dateA, dateB) : null;
+
+    const payerCost = isNum(bidA) && isNum(offerB) ? (offerB - bidA) * 100 : null;
+    const receiverGain = isNum(offerA) && isNum(bidB) ? (bidB - offerA) * 100 : null;
+    const payerPerDay = payerCost !== null && days ? payerCost / days : null;
+    const receiverPerDay = receiverGain !== null && days ? receiverGain / days : null;
+
+    return { days, bidA, bidB, offerA, offerB, payerCost, receiverGain, payerPerDay, receiverPerDay };
+  }
+
+  /**
+   * Click-to-reveal relation panel: closes any panel already open (only
+   * one at a time), and detaches its outside-click/Escape listeners so
+   * they don't pile up across renders.
+   */
+  function closeRelationDetails() {
+    document.querySelectorAll('.ladder-relation-panel').forEach((p) => {
+      if (p._cleanup) p._cleanup();
+      p.remove();
+    });
+  }
+
+  function openRelationDetails(targetEl, wrap) {
+    closeRelationDetails(); // one panel at a time
+    const fromNode = targetEl.dataset.from;
+    const toNode = targetEl.dataset.to;
+    const r = computeRelationNumbers(fromNode, toNode);
+    const dp = state.rateDecimals || 2;
+    const fmtOrDash = (v) => (isNum(v) ? fmtSigned(v, dp) : '—');
+    const fmtPerDay = (v) => (isNum(v) ? `${fmtTrim(v, 4)} p/day` : '—');
+    const bothMissing = r.payerCost === null && r.receiverGain === null;
+    const fmtRate = (v) => (isNum(v) ? fmtNum(v, dp) : '—');
+
+    const panel = document.createElement('div');
+    panel.className = 'ladder-relation-panel';
+    panel.innerHTML = `
+      <div class="ladder-relation-title">${nodeLabel(fromNode)} → ${nodeLabel(toNode)} <span class="ladder-relation-perday">(${isNum(r.days) ? r.days : '—'} days)</span></div>
+      <div class="ladder-relation-row"><span class="ladder-relation-side payer">Payer</span> ${fmtOrDash(r.payerCost)}p <span class="ladder-relation-perday">(${fmtPerDay(r.payerPerDay)})</span></div>
+      <div class="ladder-relation-rates">sell ${nodeLabel(fromNode)} Bid ${fmtRate(r.bidA)} → buy ${nodeLabel(toNode)} Offer ${fmtRate(r.offerB)}</div>
+      <div class="ladder-relation-row"><span class="ladder-relation-side receiver">Receiver</span> ${fmtOrDash(r.receiverGain)}p <span class="ladder-relation-perday">(${fmtPerDay(r.receiverPerDay)})</span></div>
+      <div class="ladder-relation-rates">buy ${nodeLabel(fromNode)} Offer ${fmtRate(r.offerA)} → sell ${nodeLabel(toNode)} Bid ${fmtRate(r.bidB)}</div>
+      ${bothMissing ? '<div class="ladder-relation-empty">Not resolvable yet — Payer needs the near Bid and far Offer; Receiver needs the near Offer and far Bid.</div>' : ''}
+    `;
+    panel.style.position = 'absolute';
+    const rect = targetEl.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    panel.style.left = `${Math.max(4, rect.left - wrapRect.left - 150)}px`;
+    panel.style.top = `${rect.top - wrapRect.top + 12}px`;
+    panel.style.zIndex = '10';
+    wrap.appendChild(panel);
+
+    const onDocClick = (ev) => {
+      if (!panel.contains(ev.target) && ev.target !== targetEl) closeRelationDetails();
+    };
+    const onKey = (ev) => { if (ev.key === 'Escape') closeRelationDetails(); };
+    // Deferred so the very click that opened the panel doesn't also
+    // immediately trigger onDocClick and close it again.
+    setTimeout(() => {
+      document.addEventListener('click', onDocClick);
+      document.addEventListener('keydown', onKey);
+    }, 0);
+    panel._cleanup = () => {
+      document.removeEventListener('click', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }
+
   function buildLadderSVG(curve, matches, mismatches, anchorByNode) {
     const rows = buildDisplayRows();
     const n = rows.length;
@@ -1115,23 +1214,10 @@
     // Premium Entry between them happens to be flagged "Per Day" or
     // holds a flat number instead.
     function diffTooltip(keyA, keyB) {
-      const bestA = state.swapBest && state.swapBest[keyA];
-      const bestB = state.swapBest && state.swapBest[keyB];
-      const ca = curve[keyA];
-      const cb = curve[keyB];
-      const bidA = bestA && isNum(bestA.bid.val) ? bestA.bid.val : (ca && ca.payerBid);
-      const bidB = bestB && isNum(bestB.bid.val) ? bestB.bid.val : (cb && cb.payerBid);
-      const offerA = bestA && isNum(bestA.offer.val) ? bestA.offer.val : (ca && ca.receiverOffer);
-      const offerB = bestB && isNum(bestB.offer.val) ? bestB.offer.val : (cb && cb.receiverOffer);
-
-      const days = FXCalendar.calendarDaysBetween(nodeDate(keyA), nodeDate(keyB));
-      const payerDiff = isNum(bidA) && isNum(bidB) ? (bidB - bidA) * 100 : null;
-      const receiverDiff = isNum(offerA) && isNum(offerB) ? (offerB - offerA) * 100 : null;
-      const payerPerDay = payerDiff !== null && days ? payerDiff / days : null;
-      const receiverPerDay = receiverDiff !== null && days ? receiverDiff / days : null;
+      const r = computeRelationNumbers(keyA, keyB);
       const perDayTag = (v) => (v !== null ? ` (${fmtTrim(v, 4)} p/day)` : '');
       const dp = state.rateDecimals || 2;
-      return `Payer diff: ${payerDiff !== null ? fmtTrim(payerDiff, dp) : '—'}${perDayTag(payerPerDay)}\nReceiver diff: ${receiverDiff !== null ? fmtTrim(receiverDiff, dp) : '—'}${perDayTag(receiverPerDay)}`;
+      return `Payer (sell Bid → buy Offer): ${r.payerCost !== null ? fmtTrim(r.payerCost, dp) : '—'}${perDayTag(r.payerPerDay)}\nReceiver (buy Offer → sell Bid): ${r.receiverGain !== null ? fmtTrim(r.receiverGain, dp) : '—'}${perDayTag(r.receiverPerDay)}`;
     }
 
     const rowY = (i) => topPad + i * slot;
@@ -1346,7 +1432,17 @@
       // way regardless.
       const editablePremRect = `
         <rect x="${railX}" y="${midY - rowH / 2}" width="${premRightX - railX}" height="${rowH}" fill="transparent" class="ladder-prem-editable" style="cursor:pointer;" data-from="${a.key}" data-to="${b.key}"><title>${diffTooltip(a.key, b.key)}</title></rect>`;
-      svg += `<text x="${railX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium" pointer-events="none">${prem}</text>${editablePremRect}`;
+      // Small "ⓘ" button, drawn LAST (on top) so it captures the click
+      // before the transparent edit-rect underneath it — tapping it opens
+      // the persistent Payer/Receiver relation panel (openRelationDetails)
+      // instead of the rate-editing input, which is what the rest of this
+      // strip still opens when clicked anywhere else.
+      const infoBtn = `
+        <g class="ladder-relation-info" data-from="${a.key}" data-to="${b.key}" style="cursor:pointer;">
+          <circle cx="${premRightX - 6}" cy="${midY}" r="5" fill="var(--panel-alt, rgba(128,128,128,0.18))" stroke="var(--border-strong, rgba(128,128,128,0.5))" stroke-width="0.5"></circle>
+          <text x="${premRightX - 6}" y="${midY}" text-anchor="middle" dominant-baseline="central" font-size="6" font-weight="700" fill="var(--text-dim, #888)" pointer-events="none">i</text>
+        </g>`;
+      svg += `<text x="${railX + 6}" y="${midY}" dominant-baseline="central" class="ladder-premium" pointer-events="none">${prem}</text>${editablePremRect}${infoBtn}`;
     }
 
     // Automatic, non-interactive source curves: whenever a tenor's best
@@ -1453,6 +1549,7 @@
   }
 
   function renderQuoteScreen() {
+    closeRelationDetails(); // the SVG below is about to be fully replaced — drop any open panel and its listeners first
     const wrap = document.getElementById('quoteLadderWrap');
     wrap.innerHTML = buildLadderSVG(state.solved.curve, state.matches, state.mismatches, state.anchorByNode);
     attachLadderEditing(wrap);
@@ -1475,6 +1572,12 @@
     wrap.querySelectorAll('.ladder-prem-editable').forEach((el) => {
       el.style.cursor = 'pointer';
       el.addEventListener('click', () => openLadderPremiumEditor(el, wrap));
+    });
+    wrap.querySelectorAll('.ladder-relation-info').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation(); // don't also let the click fall through to the edit-rect underneath
+        openRelationDetails(el, wrap);
+      });
     });
   }
 
@@ -1669,6 +1772,39 @@
   /* ==================================================================
      RENDER: Odd / Broken Dates (custom value dates, interpolated)
      ================================================================== */
+
+  /**
+   * Shared by the "Add Date" button and the calendar date picker: adds a
+   * new Odd/Broken Date entry for the given ISO date (or, if that exact
+   * date is already in the list, just reuses the existing row instead of
+   * duplicating it), then jumps straight to its Rate input — scrolled
+   * into view and focused — so picking a date from the calendar is the
+   * whole interaction; the very next keystroke is the rate itself.
+   */
+  function addOrFocusBrokenDate(iso) {
+    let entry = state.brokenDates.find((bd) => bd.dateStr === iso);
+    if (!entry) {
+      entry = { id: nextBrokenDateId++, dateStr: iso, rate: '' };
+      state.brokenDates.push(entry);
+      // recompute() + renderDownstream() (which refreshes the Premium
+      // Entries dropdowns via refreshTenorSelects) is what makes this new
+      // Odd Date immediately pickable as a Tenor 1 / Tenor 2 there.
+      recompute();
+      renderPremiumTable();
+      renderDownstream();
+      scheduleSaveDraft();
+    }
+    // Wait a frame so the table above has actually finished re-rendering
+    // (renderBrokenDates() just rebuilt brokenDateTableBody) before
+    // looking for the row to scroll to.
+    requestAnimationFrame(() => {
+      const rateInput = document.querySelector(`[data-broken-rate-id="${entry.id}"]`);
+      if (!rateInput) return;
+      rateInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => rateInput.focus(), 250); // let the smooth scroll settle first
+    });
+  }
+
   function renderBrokenDates() {
     const tbody = document.getElementById('brokenDateTableBody');
     if (!tbody) return;
@@ -1962,16 +2098,23 @@
       if (!input.value.trim()) { alert('Type a date first, e.g. 15-09-2026.'); return; }
       const iso = parseFlexibleDateToISO(input.value);
       if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); return; }
-      state.brokenDates.push({ id: nextBrokenDateId++, dateStr: iso, rate: '' });
       input.value = '';
-      // recompute() + renderDownstream() (which refreshes the Premium
-      // Entries dropdowns via refreshTenorSelects) is what makes this new
-      // Odd Date immediately pickable as a Tenor 1 / Tenor 2 there.
-      recompute();
-      renderPremiumTable();
-      renderDownstream();
-      scheduleSaveDraft();
+      addOrFocusBrokenDate(iso);
     });
+
+    // Calendar picker: the browser's own date-picker UI (a real clickable
+    // calendar grid, no typing needed at all) — its value is already
+    // 'YYYY-MM-DD', i.e. already the ISO format this app uses internally,
+    // so it goes straight to addOrFocusBrokenDate with no parsing step.
+    const newBrokenDatePicker = document.getElementById('newBrokenDatePicker');
+    if (newBrokenDatePicker) {
+      newBrokenDatePicker.addEventListener('change', () => {
+        const iso = newBrokenDatePicker.value;
+        if (!iso) return;
+        addOrFocusBrokenDate(iso);
+        newBrokenDatePicker.value = '';
+      });
+    }
 
     document.getElementById('clearInputsBtn').addEventListener('click', () => {
       if (!confirm('Clear every input field?')) return;
