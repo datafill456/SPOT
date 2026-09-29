@@ -1630,7 +1630,15 @@
     } else if (existingEntry) {
       existingEntry.premium = raw; // keep its existing direction and Per Day flag, just update the value
     } else {
-      state.premiumEntries.push({ id: nextPremiumId++, from: fromNode, to: toNode, premium: raw, perDay: false });
+      // Same smart default the "Add Premium" button already uses: Per Day
+      // on whenever either end is Cash/Tom, since those near dates are
+      // quoted as points-per-day almost everywhere on a real desk —
+      // otherwise off, matching how forward tenors are normally quoted
+      // (a flat total, not scaled per day). This is what a keyboard
+      // shortcut pair (e.g. pressing "13") creates too, since it opens
+      // this same editor.
+      const perDay = NEAR_DATES.includes(fromNode) || NEAR_DATES.includes(toNode);
+      state.premiumEntries.push({ id: nextPremiumId++, from: fromNode, to: toNode, premium: raw, perDay });
     }
     recompute();
     renderPremiumTable();
