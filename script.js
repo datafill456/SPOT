@@ -2019,20 +2019,6 @@
         addOrFocusBrokenDate(iso);
         newBrokenDatePicker.value = '';
       });
-
-      // Chrome/Edge only open the calendar from the tiny icon inside the
-      // box, which is nearly invisible on a dark theme — so clicking
-      // anywhere on the box, or the 📅 button next to it, opens it
-      // directly via showPicker() (needs a click, which both are).
-      const openPicker = () => {
-        try {
-          if (typeof newBrokenDatePicker.showPicker === 'function') newBrokenDatePicker.showPicker();
-          else newBrokenDatePicker.focus();
-        } catch (e) { newBrokenDatePicker.focus(); }
-      };
-      newBrokenDatePicker.addEventListener('click', openPicker);
-      const openBtn = document.getElementById('openDatePickerBtn');
-      if (openBtn) openBtn.addEventListener('click', openPicker);
     }
 
     document.getElementById('clearInputsBtn').addEventListener('click', () => {
