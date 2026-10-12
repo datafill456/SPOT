@@ -85,39 +85,23 @@ const FXCalculator = (function () {
     // have.
     const isPureUSHoliday = (d) => cal.isUSHoliday(d) && !cal.isWeekend(d) && !cal.isHoliday(d);
 
+    // Only Cash is ever hidden. On a pure US holiday there is no same-day
+    // (Cash) value date, so today itself is day 0 and Tom / Spot are simply
+    // the next one / two days open on BOTH sides (Sri Lanka and the US).
     let cash = null;
     const cashHidden = isPureUSHoliday(tradeDate);
     let referenceDate;
 
     if (cashHidden) {
-      referenceDate = cal.previousWorkingDay(tradeDate);
+      referenceDate = new Date(tradeDate);
     } else {
       cash = cal.isWorkingDay(tradeDate) ? new Date(tradeDate) : cal.rollFollowing(tradeDate);
       referenceDate = cash;
     }
 
-    // The "natural" T+1 slot: the very next day Sri Lanka itself would
-    // call a business day (weekend/SL-holiday skipped), before even
-    // considering whether the US is open that day.
-    let candidateTom = cal.addDays(referenceDate, 1);
-    while (cal.isWeekend(candidateTom) || cal.isHoliday(candidateTom)) {
-      candidateTom = cal.addDays(candidateTom, 1);
-    }
-    // candidateTom is already guaranteed SL-open, so a US holiday there
-    // is necessarily a "pure" one.
-    const tomHidden = cal.isUSHoliday(candidateTom);
-
-    let tom, spot;
-    if (tomHidden) {
-      tom = null;
-      // Skips straight past the US-holiday slot to the next day open on
-      // both sides — the same date Tom would have landed on under the
-      // old roll-forward behavior, now claimed by Spot instead.
-      spot = cal.addWorkingDays(referenceDate, 1);
-    } else {
-      tom = candidateTom;
-      spot = cal.addWorkingDays(referenceDate, 2);
-    }
+    const tomHidden = false; // Tom is always shown now
+    const tom = cal.nextWorkingDay(referenceDate);
+    const spot = cal.addWorkingDays(referenceDate, 2);
 
     const dates = { cash, tom, spot };
     dates['1W'] = cal.addTenorWeeks(spot, 1);
