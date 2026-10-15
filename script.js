@@ -330,29 +330,60 @@
     });
     const provisionalAnchors = guesses.filter((g) => g.bid !== null || g.offer !== null);
     const provisional = FXCalculator.solveMarket(edges, provisionalAnchors, state.valueDates);
-    const spotGuess = guesses.find((g) => g.node === 'spot');
 
-    // Pass 2: wherever the premium graph independently connects a forward
-    // tenor back to Spot (regardless of any Big Figure guess), that's a
-    // far more reliable Big Figure than the flat per-day estimate —
-    // re-resolve the same typed shorthand against Spot's real rate plus
-    // that actual premium instead. Skipped entirely for a Rate Entry with
-    // its own explicit override — that's the dealer overruling both
-    // guesses on purpose, so it's never auto-corrected back.
-    const anchors = guesses.map((g) => {
-      if (g.hasOverride || g.node === 'spot' || NEAR_DATES.includes(g.node) || !spotGuess) return g;
-      const provRow = provisional.curve[g.node];
-      const premRel = isNum(provRow.payerPremium) ? provRow.payerPremium : provRow.receiverPremium;
-      if (!isNum(premRel)) return g; // no better info yet — keep the heuristic guess
-      const expected = isNum(spotGuess.bid) ? spotGuess.bid + premRel
-        : isNum(spotGuess.offer) ? spotGuess.offer + premRel : null;
-      if (expected === null) return g;
-      const firstRaw = parseFloat((g.rateStr || '').split('/')[0]);
-      if (!isFinite(firstRaw) || Math.abs(firstRaw) >= 100) return g; // was a full rate, not shorthand
-      const refinedBF = Math.round(expected - firstRaw / 100);
-      const r = parseRateShorthand(g.rateStr, refinedBF);
-      return { node: g.node, rateStr: g.rateStr, bid: r.bid, offer: r.offer };
-    }).filter((g) => g.bid !== null || g.offer !== null);
+    // Pass 2: settle each typed shorthand rate's Big Figure against the
+    // premium chain. The shared Big Figure only really belongs to the
+    // EARLIEST typed tenor; every later one that's linked to an earlier
+    // typed rate by a Premium Entry takes whichever Big Figure puts it
+    // closest to "earlier rate + that premium". That's what lets Cash
+    // 95/97 on Big Figure 331 followed by Spot "00/10" come out as
+    // Spot 332.00/332.10 (not 331.00/331.10, which would sit BELOW Cash
+    // and make the chain-created prices cross the market) — and the same
+    // rule covers Spot, Tom and forward tenors alike. Each rate is
+    // measured against the nearest earlier one it's linked to, so a
+    // long chain stays consistent hop by hop. Skipped for a Rate Entry
+    // with its own explicit override (the dealer overruled the guess on
+    // purpose), for full rates typed with their own Big Figure, and for
+    // a rate with no premium link back to anything typed earlier (it
+    // keeps its heuristic guess).
+    const premOf = (node) => {
+      const row = provisional.curve[node];
+      if (!row) return null;
+      return isNum(row.payerPremium) ? row.payerPremium : (isNum(row.receiverPremium) ? row.receiverPremium : null);
+    };
+    const settled = guesses.map((g) => g);
+    const typedOrder = guesses
+      .map((g, i) => i)
+      .filter((i) => guesses[i].bid !== null || guesses[i].offer !== null)
+      .sort((a, b) => TENORS.indexOf(guesses[a].node) - TENORS.indexOf(guesses[b].node));
+    const done = [];
+    typedOrder.forEach((i) => {
+      const g = guesses[i];
+      let out = g;
+      const gPrem = premOf(g.node);
+      if (!g.hasOverride && done.length && isNum(gPrem)) {
+        const parts = (g.rateStr || '').split('/');
+        const bidRaw = parseFloat(parts[0]);
+        const offerRaw = parts.length > 1 ? parseFloat(parts[1]) : NaN;
+        const rawPart = isFinite(bidRaw) ? bidRaw : offerRaw;
+        if (isFinite(rawPart) && Math.abs(rawPart) < 100) { // shorthand, not a full rate
+          for (let k = done.length - 1; k >= 0; k--) {
+            const ref = done[k];
+            const rPrem = premOf(ref.node);
+            const refVal = isNum(ref.bid) ? ref.bid : ref.offer;
+            if (!isNum(rPrem) || !isNum(refVal)) continue;
+            const expected = refVal + (gPrem - rPrem);
+            const refinedBF = Math.round(expected - rawPart / 100);
+            const r = parseRateShorthand(g.rateStr, refinedBF);
+            out = { node: g.node, rateStr: g.rateStr, bid: r.bid, offer: r.offer };
+            break;
+          }
+        }
+      }
+      settled[i] = out;
+      done.push(out);
+    });
+    const anchors = settled.filter((g) => g.bid !== null || g.offer !== null);
 
     // Odd/Broken Dates join the same premium graph as a plain extra node,
     // referenced as "bd:<id>" — so a Premium Entry can connect one to any
@@ -943,7 +974,7 @@
     const hiddenLabel = isCashHidden() && isTomHidden() ? 'Cash & Tom hidden today'
       : isCashHidden() ? 'Cash hidden today' : isTomHidden() ? 'Tom hidden today' : '';
     const cashNote = hiddenLabel
-      ? ` ${hiddenLabel} (US holiday) — ladder anchored from ${fmtDateLabel(state.valueDates.referenceDate)}.`
+      ? ` ${hiddenLabel} (US holiday) — Tom/Spot/forwards counted from today, ${fmtDateLabel(state.valueDates.referenceDate)}.`
       : '';
 
     if (!anySpot) {
@@ -2019,6 +2050,20 @@
         addOrFocusBrokenDate(iso);
         newBrokenDatePicker.value = '';
       });
+
+      // Chrome/Edge only open the calendar from the tiny icon inside the
+      // box, which is nearly invisible on a dark theme — so clicking
+      // anywhere on the box, or the 📅 button next to it, opens it
+      // directly via showPicker() (needs a click, which both are).
+      const openPicker = () => {
+        try {
+          if (typeof newBrokenDatePicker.showPicker === 'function') newBrokenDatePicker.showPicker();
+          else newBrokenDatePicker.focus();
+        } catch (e) { newBrokenDatePicker.focus(); }
+      };
+      newBrokenDatePicker.addEventListener('click', openPicker);
+      const openBtn = document.getElementById('openDatePickerBtn');
+      if (openBtn) openBtn.addEventListener('click', openPicker);
     }
 
     document.getElementById('clearInputsBtn').addEventListener('click', () => {
