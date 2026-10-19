@@ -667,10 +667,13 @@
   function populatePremiumSelect(sel, fallback) {
     const prev = sel.value;
     const brokenDatesSorted = (state.brokenDates || []).slice().sort((a, b) => (a.dateStr < b.dateStr ? -1 : 1));
-    const tenorOptions = visibleTenors().map((t) => `<option value="${t}">${LABELS[t]}</option>`);
-    const brokenOptions = brokenDatesSorted.map((bd) => `<option value="bd:${bd.id}">${nodeLabel(`bd:${bd.id}`)}</option>`);
-    sel.innerHTML = tenorOptions.concat(brokenOptions).join('');
-    const validValues = visibleTenors().concat(brokenDatesSorted.map((bd) => `bd:${bd.id}`));
+    // Standard tenors and Odd Dates merged and sorted by real value date
+    // (same order as the ladder); on a tie the standard tenor comes first.
+    const items = visibleTenors().map((t) => ({ value: t, label: LABELS[t], date: state.valueDates.dates[t] }))
+      .concat(brokenDatesSorted.map((bd) => ({ value: `bd:${bd.id}`, label: nodeLabel(`bd:${bd.id}`), date: FXCalendar.parse(bd.dateStr) })));
+    items.sort((a, b) => a.date - b.date);
+    sel.innerHTML = items.map((it) => `<option value="${it.value}">${it.label}</option>`).join('');
+    const validValues = items.map((it) => it.value);
     if (validValues.includes(prev)) {
       sel.value = prev;
     } else if (fallback) {
@@ -1382,6 +1385,25 @@
   function renderBrokenDates() {
     const tbody = document.getElementById('brokenDateTableBody');
     if (!tbody) return;
+
+    // This table is rebuilt on EVERY keystroke (typing a rate recomputes
+    // and re-renders downstream). Without preserving state, the box being
+    // typed in is destroyed after one character, focus drops to the page,
+    // and the next digits fire the keyboard shortcuts instead. So snapshot
+    // the focused field (with caret) and the mini premium forms first,
+    // and put them back after the rebuild.
+    const snap = { prem: {}, focus: null };
+    tbody.querySelectorAll('[data-broken-prem-tenor]').forEach((el) => { snap.prem['t' + el.dataset.brokenPremTenor] = el.value; });
+    tbody.querySelectorAll('[data-broken-prem-value]').forEach((el) => { snap.prem['v' + el.dataset.brokenPremValue] = el.value; });
+    const activeEl = document.activeElement;
+    if (activeEl && tbody.contains(activeEl)) {
+      const attr = ['data-broken-rate-id', 'data-broken-date-id', 'data-broken-prem-value', 'data-broken-prem-tenor']
+        .find((a) => activeEl.hasAttribute(a));
+      if (attr) {
+        snap.focus = { attr, id: activeEl.getAttribute(attr), start: activeEl.selectionStart, end: activeEl.selectionEnd };
+      }
+    }
+
     tbody.innerHTML = '';
     state.brokenDates
       .slice()
@@ -1520,6 +1542,22 @@
         scheduleSaveDraft();
       });
     });
+
+    // Restore what was typed in the mini premium forms, then focus + caret.
+    Object.keys(snap.prem).forEach((k) => {
+      const id = k.slice(1);
+      const el = tbody.querySelector(k[0] === 't' ? `[data-broken-prem-tenor="${id}"]` : `[data-broken-prem-value="${id}"]`);
+      if (el) el.value = snap.prem[k];
+    });
+    if (snap.focus) {
+      const el = tbody.querySelector(`[${snap.focus.attr}="${snap.focus.id}"]`);
+      if (el) {
+        el.focus();
+        try {
+          if (snap.focus.start != null) el.setSelectionRange(snap.focus.start, snap.focus.end);
+        } catch (e) { /* select elements have no caret */ }
+      }
+    }
   }
 
   /* ==================================================================
