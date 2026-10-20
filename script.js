@@ -46,7 +46,9 @@
   const NEAR_DATES = ['cash', 'tom'];
 
   const state = {
-    tradeDate: new Date(),
+    // Midnight, not "now": every value date is built from this, and a
+    // leftover time-of-day made same-day Odd Dates sort ahead of Cash.
+    tradeDate: (() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate()); })(),
     pair: 'USD/LKR',
     bigFigure: '',
     rateEntries: [],     // [{ id, node, rate: '30/40' }]
@@ -68,6 +70,28 @@
   }
 
   function isNum(v) { return typeof v === 'number' && !Number.isNaN(v); }
+
+  /**
+   * Fast rate entry: as soon as exactly 2 digits have been typed as the
+   * bid, a "/" is added automatically so the next keystrokes are the
+   * offer ("50" -> "50/" -> type "60" -> "50/60"). Only for typed
+   * keystrokes with the caret at the end (never on delete/paste), and
+   * only when a Big Figure is set (shorthand mode) — with no Big Figure
+   * the dealer types full rates like 336.20, where 2 digits is not the
+   * whole bid. Must be attached BEFORE a field's own input listener so
+   * that listener sees the value with the "/" already in it.
+   */
+  function attachAutoSlash(input, needsBigFigure = true) {
+    input.addEventListener('input', (e) => {
+      if (e.inputType !== 'insertText') return;
+      // Premiums are literal points (no Big Figure involved), so the
+      // Premium boxes pass needsBigFigure = false.
+      if (needsBigFigure && !isFinite(parseFloat(state.bigFigure))) return;
+      if (/^\d{2}$/.test(input.value) && input.selectionStart === input.value.length) {
+        input.value += '/';
+      }
+    });
+  }
 
   function isCashHidden() {
     return !!(state.valueDates && state.valueDates.cashHidden);
@@ -142,7 +166,7 @@
   function orderChronologically(a, b) {
     const da = nodeDate(a);
     const db = nodeDate(b);
-    if (da && db && da > db) return [b, a];
+    if (da && db && FXCalendar.fmt(da) > FXCalendar.fmt(db)) return [b, a];
     return [a, b];
   }
 
@@ -671,7 +695,10 @@
     // (same order as the ladder); on a tie the standard tenor comes first.
     const items = visibleTenors().map((t) => ({ value: t, label: LABELS[t], date: state.valueDates.dates[t] }))
       .concat(brokenDatesSorted.map((bd) => ({ value: `bd:${bd.id}`, label: nodeLabel(`bd:${bd.id}`), date: FXCalendar.parse(bd.dateStr) })));
-    items.sort((a, b) => a.date - b.date);
+    items.sort((a, b) => {
+      const ka = FXCalendar.fmt(a.date), kb = FXCalendar.fmt(b.date);
+      return ka < kb ? -1 : ka > kb ? 1 : 0; // stable: standard tenor stays first on a tie
+    });
     sel.innerHTML = items.map((it) => `<option value="${it.value}">${it.label}</option>`).join('');
     const validValues = items.map((it) => it.value);
     if (validValues.includes(prev)) {
@@ -717,6 +744,7 @@
       const id = Number(input.dataset.rateId);
       const entry = state.rateEntries.find((e) => e.id === id);
       input.value = entry.rate;
+      attachAutoSlash(input);
       input.addEventListener('input', () => {
         entry.rate = input.value;
         recompute();
@@ -771,6 +799,7 @@
       const id = Number(input.dataset.id);
       const entry = state.premiumEntries.find((e) => e.id === id);
       input.value = entry.premium;
+      attachAutoSlash(input, false);
       input.addEventListener('input', () => {
         entry.premium = input.value;
         recompute();
@@ -873,7 +902,13 @@
       const date = FXCalendar.parse(bd.dateStr);
       rows.push({ key: `bd:${bd.id}`, kind: 'broken', label: fmtDateLabel(date), date, bd });
     });
-    rows.sort((a, b) => a.date - b.date);
+    // Compare by calendar day (ignoring any time-of-day); on the same day
+    // a standard tenor stays above an Odd Date.
+    rows.sort((a, b) => {
+      const ka = FXCalendar.fmt(a.date), kb = FXCalendar.fmt(b.date);
+      if (ka !== kb) return ka < kb ? -1 : 1;
+      return (a.kind === 'broken' ? 1 : 0) - (b.kind === 'broken' ? 1 : 0);
+    });
     return rows;
   }
 
@@ -1196,6 +1231,7 @@
     const entry = bdObj ? { rate: bdObj.rate } : state.rateEntries.find((e) => e.node === tenor);
     input.placeholder = '30/40';
     input.value = entry && entry.rate ? entry.rate : '';
+    attachAutoSlash(input);
     input.style.position = 'absolute';
     input.style.left = `${rect.left - wrapRect.left - 20}px`;
     input.style.top = `${rect.top - wrapRect.top - 4}px`;
@@ -1286,6 +1322,7 @@
     input.className = 'cell-input ladder-edit-input';
     input.placeholder = '5/5.5';
     input.value = entry ? entry.premium : '';
+    attachAutoSlash(input, false);
     input.style.position = 'absolute';
     input.style.left = `${rect.left - wrapRect.left - 20}px`;
     input.style.top = `${rect.top - wrapRect.top - 4}px`;
@@ -1469,6 +1506,8 @@
       });
 
 
+    tbody.querySelectorAll('[data-broken-prem-value]').forEach((el) => attachAutoSlash(el, false));
+
     tbody.querySelectorAll('[data-broken-prem-add]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const bdId = Number(btn.dataset.brokenPremAdd);
@@ -1522,6 +1561,7 @@
     });
 
     tbody.querySelectorAll('[data-broken-rate-id]').forEach((input) => {
+      attachAutoSlash(input);
       input.addEventListener('input', () => {
         const entry = state.brokenDates.find((e) => e.id === Number(input.dataset.brokenRateId));
         if (!entry) return;
@@ -1621,6 +1661,8 @@
      Wire up static controls
      ================================================================== */
   function wireStaticControls() {
+    attachAutoSlash(document.getElementById('bulkPremiumValue'), false);
+
     document.getElementById('themeToggle').addEventListener('click', () => {
       const current = document.documentElement.getAttribute('data-theme');
       applyTheme(current === 'dark' ? 'light' : 'dark');
