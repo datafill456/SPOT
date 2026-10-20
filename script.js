@@ -87,7 +87,11 @@
       // Premiums are literal points (no Big Figure involved), so the
       // Premium boxes pass needsBigFigure = false.
       if (needsBigFigure && !isFinite(parseFloat(state.bigFigure))) return;
-      if (/^\d{2}$/.test(input.value) && input.selectionStart === input.value.length) {
+      // Rates: exactly 2 digits ("50"). Premiums also accept a one-digit
+      // decimal ("5.5"), the common per-day form — backspace removes the
+      // "/" if a longer decimal like 5.25 is meant.
+      const trigger = needsBigFigure ? /^\d{2}$/ : /^(\d{2}|\d\.\d)$/;
+      if (trigger.test(input.value) && input.selectionStart === input.value.length) {
         input.value += '/';
       }
     });
@@ -1217,6 +1221,44 @@
     });
   }
 
+  /** The row above (step -1) or below (step +1) a row on the ladder, in on-screen order. */
+  function neighbourRow(node, step) {
+    const order = state.shortcutOrder || [];
+    const i = order.indexOf(node);
+    return i === -1 ? null : (order[i + step] || null);
+  }
+
+  /** Opens the Rate editor on a row by key (same as clicking its rate). */
+  function openRateEditorForTenor(tenor) {
+    const rect = document.querySelector(`.ladder-val-editable[data-tenor="${tenor}"]`);
+    const wrap = document.getElementById('quoteLadderWrap');
+    if (rect && wrap) openLadderEditor(rect, wrap);
+  }
+
+  /** Opens the Premium editor between two rows (any two, adjacent or not). */
+  function openPremiumEditorBetween(tenorA, tenorB) {
+    if (!tenorA || !tenorB || tenorA === tenorB) return;
+    const wrap = document.getElementById('quoteLadderWrap');
+    if (!wrap) return;
+    let target = wrap.querySelector(`.ladder-prem-editable[data-from="${tenorA}"][data-to="${tenorB}"]`)
+      || wrap.querySelector(`.ladder-prem-editable[data-from="${tenorB}"][data-to="${tenorA}"]`);
+    if (target) { openLadderPremiumEditor(target, wrap); return; }
+    const rectA = document.querySelector(`.ladder-val-editable[data-tenor="${tenorA}"]`);
+    const rectB = document.querySelector(`.ladder-val-editable[data-tenor="${tenorB}"]`);
+    if (!rectA || !rectB) return;
+    const rA = rectA.getBoundingClientRect();
+    const rB = rectB.getBoundingClientRect();
+    const marker = document.createElement('div');
+    marker.style.position = 'fixed';
+    marker.style.left = `${(rA.left + rB.left) / 2}px`;
+    marker.style.top = `${(rA.top + rB.top) / 2}px`;
+    marker.dataset.from = tenorA;
+    marker.dataset.to = tenorB;
+    document.body.appendChild(marker);
+    openLadderPremiumEditor(marker, wrap);
+    marker.remove();
+  }
+
   function openLadderEditor(targetEl, wrap) {
     if (wrap.querySelector('.ladder-edit-input')) return;
     const tenor = targetEl.dataset.tenor;
@@ -1258,6 +1300,14 @@
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') commit();
       if (e.key === 'Escape') cancel();
+      // Up/Down: save this rate and jump straight to the row above/below.
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = neighbourRow(tenor, e.key === 'ArrowDown' ? 1 : -1);
+        if (!next) return;
+        commit();
+        openRateEditorForTenor(next);
+      }
     });
     input.addEventListener('blur', commit);
   }
@@ -1349,6 +1399,20 @@
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') commit();
       if (e.key === 'Escape') cancel();
+      // Up/Down: save this premium and jump to the gap above/below.
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const order = state.shortcutOrder || [];
+        const iA = order.indexOf(fromNode);
+        const iB = order.indexOf(toNode);
+        if (iA === -1 || iB === -1) return;
+        const lo = Math.min(iA, iB);
+        const hi = Math.max(iA, iB);
+        const pair = e.key === 'ArrowDown' ? [order[hi], order[hi + 1]] : [order[lo - 1], order[lo]];
+        if (!pair[0] || !pair[1]) return;
+        commit();
+        openPremiumEditorBetween(pair[0], pair[1]);
+      }
     });
     input.addEventListener('blur', commit);
   }
