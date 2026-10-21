@@ -87,10 +87,11 @@
       // Premiums are literal points (no Big Figure involved), so the
       // Premium boxes pass needsBigFigure = false.
       if (needsBigFigure && !isFinite(parseFloat(state.bigFigure))) return;
-      // Rates: exactly 2 digits ("50"). Premiums also accept a one-digit
-      // decimal ("5.5"), the common per-day form — backspace removes the
-      // "/" if a longer decimal like 5.25 is meant.
-      const trigger = needsBigFigure ? /^\d{2}$/ : /^(\d{2}|\d\.\d)$/;
+      // Rates: exactly 2 digits ("50"). Premiums: a number with exactly
+      // two decimal places ("4.35", "27.75") — the form premiums are
+      // actually typed in, so "4.3" / "27" are never cut short. A whole
+      // or one-decimal premium ("5", "5.5") needs its "/" typed by hand.
+      const trigger = needsBigFigure ? /^\d{2}$/ : /^\d{1,3}\.\d{2}$/;
       if (trigger.test(input.value) && input.selectionStart === input.value.length) {
         input.value += '/';
       }
