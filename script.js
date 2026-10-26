@@ -396,18 +396,6 @@
 
     state.swapBest = computeSwapBest();
 
-    // A CREATED price can need more than 2 decimals too (e.g. a 4.35
-    // per-day premium over several days gives 331.5435). If any price
-    // actually shown on the ladder genuinely needs 3-4 decimals, the whole
-    // ladder switches to 4dp so that price is never silently rounded off.
-    Object.keys(state.swapBest).forEach((node) => {
-      if ((node === 'cash' && isCashHidden()) || (node === 'tom' && isTomHidden())) return;
-      const r = state.swapBest[node];
-      [r.bid, r.offer].forEach((c) => {
-        if (c && isNum(c.val)) state.rateDecimals = Math.max(state.rateDecimals, neededDecimalsFor(c.val));
-      });
-    });
-
     // Match detection (typed premium agrees with typed rates).
     const TOL = 0.005;
     state.matches = [];
@@ -676,21 +664,15 @@
   }
 
   /** [bid, offer] -> full-rate strings; decimals follow state.rateDecimals (2 normally, 4 when needed). */
-  /** Decimals a single price needs: 4 only if rounding it to 2dp would change it, otherwise 2. */
-  function decimalsFor(v) {
-    return isNum(v) && Math.abs(v - parseFloat(v.toFixed(2))) > 1e-9 ? 4 : 2;
-  }
-
-  // Each price decides its own decimals: 2 normally, 4 only for a price
-  // that genuinely has them (typed or created).
   function fmtRatePairParts(bid, offer, dp) {
-    const full = (v) => (v === null ? '—' : fmtNum(v, dp || decimalsFor(v)));
+    const d = dp || state.rateDecimals || 2;
+    const full = (v) => (v === null ? '—' : fmtNum(v, d));
     return [full(bid), full(offer)];
   }
 
   /** Just the digits past the decimal point, for the small created/outright comparison tag. */
   function fmtPipsOnly(v, dp) {
-    const d = dp || decimalsFor(v);
+    const d = dp || state.rateDecimals || 2;
     const scale = Math.pow(10, d);
     const p = Math.round((Math.abs(v) % 1) * scale);
     return String(p).padStart(d, '0');
@@ -1484,7 +1466,7 @@
      ================================================================== */
 
   /** Adds a new Odd/Broken Date (or reuses an existing row) and jumps to its Rate input. */
-  function addOrFocusBrokenDate(iso, focusRate = true) {
+  function addOrFocusBrokenDate(iso) {
     let entry = state.brokenDates.find((bd) => bd.dateStr === iso);
     if (!entry) {
       entry = { id: nextBrokenDateId++, dateStr: iso, rate: '' };
@@ -1494,9 +1476,6 @@
       renderDownstream();
       scheduleSaveDraft();
     }
-    // A Rate is optional — an odd date can be added on its own and linked
-    // later with a Premium, so only jump into the Rate box when asked to.
-    if (!focusRate) return;
     requestAnimationFrame(() => {
       const rateInput = document.querySelector(`[data-broken-rate-id="${entry.id}"]`);
       if (!rateInput) return;
@@ -1564,7 +1543,7 @@
           tr.innerHTML = `
             ${dateInputCell}
             ${rateInputCell}
-            <td colspan="3" class="val-muted">No rate needed yet — it is on the ladder; type a Rate, or link it with a Premium (right)</td>
+            <td colspan="3" class="val-muted">Need at least 2 solved tenors to interpolate, a Premium Entry connecting this date, or type a Rate</td>
             ${premiumMiniForm}
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
@@ -1582,8 +1561,8 @@
             ${dateInputCell}
             ${rateInputCell}
             <td class="mono">${daysLabel}</td>
-            <td class="mono ${hasTypedPayer ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(payerRate, decimalsFor(payerRate))}${payerTag}</td>
-            <td class="mono ${hasTypedReceiver ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(receiverRate, decimalsFor(receiverRate))}${receiverTag}</td>
+            <td class="mono ${hasTypedPayer ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(payerRate, state.rateDecimals || 2)}${payerTag}</td>
+            <td class="mono ${hasTypedReceiver ? 'ladder-src-outright' : 'ladder-src-created'}">${fmtNum(receiverRate, state.rateDecimals || 2)}${receiverTag}</td>
             ${premiumMiniForm}
             <td><button class="btn danger" data-remove-broken="${bd.id}" style="padding:3px 8px;">✕</button></td>
           `;
@@ -1826,20 +1805,13 @@
       alert(`Added premium ${premiumVal} to ${added} tenor${added === 1 ? '' : 's'}.`);
     });
 
-    // Typed date: add it with NO rate and keep the cursor in the date box,
-    // so several odd dates can be added back to back (Enter or the button).
-    const addTypedBrokenDate = () => {
+    document.getElementById('addBrokenDateBtn').addEventListener('click', () => {
       const input = document.getElementById('newBrokenDateInput');
       if (!input.value.trim()) { alert('Type a date first, e.g. 15-09-2026.'); return; }
       const iso = parseFlexibleDateToISO(input.value);
       if (!iso) { alert('Could not read that date — use DD-MM-YYYY, e.g. 15-09-2026.'); return; }
       input.value = '';
-      addOrFocusBrokenDate(iso, false);
-      input.focus();
-    };
-    document.getElementById('addBrokenDateBtn').addEventListener('click', addTypedBrokenDate);
-    document.getElementById('newBrokenDateInput').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); addTypedBrokenDate(); }
+      addOrFocusBrokenDate(iso);
     });
 
     const newBrokenDatePicker = document.getElementById('newBrokenDatePicker');
